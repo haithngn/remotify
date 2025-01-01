@@ -1,0 +1,128 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "remotify",
+  "outputfilename": "remotify",
+  "frontend:install": "npm install",
+  "frontend:build": "npm run build",
+  "frontend:dev:watcher": "npm run dev",
+  "frontend:dev:serverUrl": "auto",
+  "mac": {
+        "bundleID": "dev.hainguyen.prod.remotify.desktop.app"
+    },
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "Remotify",
+      "default": "Remotify"
+    },
+    "assetdir": {
+      "description": "frontend/dist/assets",
+      "type": "string"
+    },
+    "author": {
+      "type": "object",
+      "description": "The application author",
+      "properties": {
+          "name": {
+              "type": "string",
+              "description": "Hai Nguyen"
+          },
+          "email": {
+              "type": "string",
+              "format": "email",
+              "description": "contact@hainguyen.dev"
+          }
+      },
+      "info": {
+        "type": "object",
+        "description": "Data used to populate manifests and version info.",
+        "properties": {
+            "companyName": {
+                "type": "string",
+                "description": "Remotify"
+            },
+            "productName": {
+                "type": "string",
+                "description": "Remotify"
+            },
+            "productVersion": {
+                "type": "string",
+                "description": "The version of the product",
+                "default": "1.0.0"
+            },
+            "copyright": {
+                "type": "string",
+                "description": "A copyright string for the product",
+                "default": "Copyright © 2024 Hai Nguyen"
+            },
+            "comments": {
+                "type": "string",
+                "description": "A short comment for the app",
+                "default": "A remote push notification debugging tool. Built using Wails (https://wails.io)"
+            }
+        }
+    }
+    }
+  },
+  "definitions": {
+    "BundleTypeRole": {
+        "description": "macOS-only. Corresponds to CFBundleTypeRole",
+        "oneOf": [
+            {
+                "description": "CFBundleTypeRole.Editor. Files can be read and edited.",
+                "type": "string",
+                "enum": [
+                    "Editor"
+                ]
+            },
+            {
+                "description": "CFBundleTypeRole.Viewer. Files can be read.",
+                "type": "string",
+                "enum": [
+                    "Viewer"
+                ]
+            },
+            {
+                "description": "CFBundleTypeRole.Shell",
+                "type": "string",
+                "enum": [
+                    "Shell"
+                ]
+            },
+            {
+                "description": "CFBundleTypeRole.QLGenerator",
+                "type": "string",
+                "enum": [
+                    "QLGenerator"
+                ]
+            },
+            {
+                "description": "CFBundleTypeRole.None",
+                "type": "string",
+                "enum": [
+                    "None"
+                ]
+            }
+        ]
+    },
+    "BindingsOutputTypes": {
+        "description": "Type of output to generate",
+        "oneOf": [
+            {
+                "description": "Classes",
+                "type": "string",
+                "enum": [
+                    "classes"
+                ]
+            },
+            {
+                "description": "Interfaces",
+                "type": "string",
+                "enum": [
+                    "interfaces"
+                ]
+            }
+        ]
+    }
+  }
+}

@@ -13,6 +13,3 @@ frontend/wailsjs
 
 build
 deployment
-
-# Wails
-wails.json
