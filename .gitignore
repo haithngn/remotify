@@ -1,0 +1,18 @@
+# OS
+.DS_Store
+
+# IDE
+.idea
+.vscode
+frontend/.idea
+
+# Build
+frontend/node_modules
+frontend/dist
+frontend/wailsjs
+
+build
+deployment
+
+# Wails
+wails.json
