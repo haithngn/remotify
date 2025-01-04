@@ -139,8 +139,11 @@ function sendAndSave() {
       isSending.value = false
       sendButtonTittle.value = 'Send'
     }, 3000);
-    forceRerenderDropdown()
-  })
+  }).finally(
+      () => {
+        forceRerenderDropdown()
+      }
+  )
 }
 function send() {
   isSending.value = true
