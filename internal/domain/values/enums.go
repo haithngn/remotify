@@ -208,7 +208,7 @@ type Bundle string
 
 const (
 	AppName Bundle = "Remotify"
-	Version Bundle = "1.0.0"
+	Version Bundle = "1.0.1"
 )
 
 var AppBundle = []struct {
