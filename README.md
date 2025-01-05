@@ -1,5 +1,7 @@
 [![Build Windows](https://github.com/haithngn/remotify/actions/workflows/build_windows.yaml/badge.svg)](https://github.com/haithngn/remotify/actions/workflows/build_windows.yaml) [![Build MacOS](https://github.com/haithngn/remotify/actions/workflows/build_osx.yaml/badge.svg)](https://github.com/haithngn/remotify/actions/workflows/build_osx.yaml) [![Build Linux](https://github.com/haithngn/remotify/actions/workflows/build_linux.yaml/badge.svg)](https://github.com/haithngn/remotify/actions/workflows/build_linux.yaml)
-# Remotify
+
+![Remotify](./screenshots/banner.png)
+
 
 **Remotify** is a tool for sending remote notifications via **Apple Push Notification Service (APNs)** and **Google Firebase Cloud Messaging (FCM)**. It is designed to streamline the process of sending notifications directly to mobile devices for several purposes, such as debugging, testing, marketing & advertising experiments, and more.
 
@@ -22,15 +24,30 @@
 
 You can install Remotify in two ways:
 
-### 1. Download from Release Page
-1. Head to the [Releases Page](https://github.com/haithngn/remotify/releases).
-2. Download the appropriate binary for your operating system.
-
-### 2. Install via Homebrew (MacOS)
+### 1. MacOS
+#### 1.1 Homebrew
 ```bash
 brew install remotify
 ```
 ---
+#### 1.2 Manual Install
+Download the installer from the [Releases Page](https://github.com/haithngn/remotify/releases) and run it.
+### 2. Linux
+Download the binary from the [Releases Page](https://github.com/haithngn/remotify/releases) and run it.
+```bash
+chmod +x remotify
+./remotify
+```
+### 3. Windows
+Download the NSIS binary from the [Releases Page](https://github.com/haithngn/remotify/releases) and run it.
+
+### 4. Compile from Source
+Clone the repository and run the following commands:
+```bash
+wails dev
+```
+You need to install development tools to compile the project, see [Technologies Used](#🛠️-technologies-used) for more details.
+
 # Roadmap
 | Feature | Description                                                                                              | Status   |
 |---|----------------------------------------------------------------------------------------------------------|---|
