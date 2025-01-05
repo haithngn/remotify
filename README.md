@@ -20,6 +20,9 @@
 
 ---
 
+# Screenshots
+![Demo](./screenshots/mobile_locked_screens.png)
+
 ## 📥 Installation
 
 You can install Remotify in two ways:
