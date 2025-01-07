@@ -30,7 +30,7 @@ You can install Remotify in two ways:
 ### 1. MacOS
 #### 1.1 Homebrew
 ```bash
-brew install remotify
+curl -L https://raw.githubusercontent.com/haithngn/homebrew-cask/refs/heads/bump-remotify-v1.0.1/Casks/r/remotify.rb >remotify.rb && brew install remotify.rb
 ```
 ---
 #### 1.2 Manual Install
