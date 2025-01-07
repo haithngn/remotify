@@ -1,13 +1,13 @@
 {
   "$schema": "https://wails.io/schemas/config.v2.json",
-  "name": "remotify",
-  "outputfilename": "remotify",
+  "name": "Remotify",
+  "outputfilename": "Remotify",
   "frontend:install": "npm install",
   "frontend:build": "npm run build",
   "frontend:dev:watcher": "npm run dev",
   "frontend:dev:serverUrl": "auto",
   "mac": {
-        "bundleID": "dev.hainguyen.prod.remotify.desktop.app"
+        "bundleID": "dev.hainguyen.remotify.desktop"
     },
   "properties": {
     "name": {
@@ -48,7 +48,7 @@
             "productVersion": {
                 "type": "string",
                 "description": "The version of the product",
-                "default": "1.0.1"
+                "default": "1.0.2"
             },
             "copyright": {
                 "type": "string",
