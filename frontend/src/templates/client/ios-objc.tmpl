@@ -1,0 +1,109 @@
+#import <UserNotifications/UserNotifications.h>
+
+// MARK: - Permission Setup (Call once in AppDelegate or initial setup)
+- (void)requestNotificationPermission {
+    UNUserNotificationCenter *center = [UNUserNotificationCenter currentNotificationCenter];
+    [center requestAuthorizationWithOptions:(UNAuthorizationOptionAlert | UNAuthorizationOptionSound | UNAuthorizationOptionBadge)
+                          completionHandler:^(BOOL granted, NSError * _Nullable error) {
+        if (granted) {
+            NSLog(@"Notification permission granted");
+        } else if (error) {
+            NSLog(@"Permission error: %@", error.localizedDescription);
+        }
+    }];
+}
+
+// MARK: - Local Notification Creation
+- (void)scheduleLocalNotification {
+    UNMutableNotificationContent *content = [[UNMutableNotificationContent alloc] init];
+    content.title = @"{{title}}";
+    content.body = @"{{body}}";
+    content.subtitle = @"Push Notification"; // Optional subtitle
+    content.sound = [UNNotificationSound defaultSound];
+    content.badge = @(1);
+    content.categoryIdentifier = @"GENERAL_CATEGORY"; // For notification actions
+    content.threadIdentifier = @"notification_thread"; // Groups related notifications
+    
+    // Custom data that matches APNS payload structure
+    content.userInfo = @{
+        @"aps": @{
+            @"alert": @{
+                @"title": @"{{title}}",
+                @"body": @"{{body}}"
+            },
+            @"sound": @"default",
+            @"badge": @(1)
+        },
+        @"custom_data": @{
+            @"type": @"local_notification",
+            @"timestamp": @([[NSDate date] timeIntervalSince1970])
+        }
+    };
+    
+    // Immediate delivery (1 second delay)
+    UNTimeIntervalNotificationTrigger *trigger = [UNTimeIntervalNotificationTrigger 
+        triggerWithTimeInterval:1 repeats:NO];
+    
+    // Alternative triggers for scheduled notifications:
+    // NSDateComponents *dateComponents = [[NSDateComponents alloc] init];
+    // dateComponents.hour = 14;
+    // dateComponents.minute = 30;
+    // UNCalendarNotificationTrigger *trigger = [UNCalendarNotificationTrigger 
+    //     triggerWithDateMatchingComponents:dateComponents repeats:YES];
+    
+    NSString *identifier = [[NSUUID UUID] UUIDString]; // Unique identifier
+    UNNotificationRequest *request = [UNNotificationRequest 
+        requestWithIdentifier:identifier content:content trigger:trigger];
+    
+    UNUserNotificationCenter *center = [UNUserNotificationCenter currentNotificationCenter];
+    [center addNotificationRequest:request withCompletionHandler:^(NSError * _Nullable error) {
+        if (error) {
+            NSLog(@"Error scheduling notification: %@", error.localizedDescription);
+        } else {
+            NSLog(@"Local notification scheduled successfully");
+            NSLog(@"Title: {{title}}");
+            NSLog(@"Body: {{body}}");
+        }
+    }];
+}
+
+// MARK: - Notification Delegate (Optional - for handling notification interactions)
+// Add to your AppDelegate.h: @interface AppDelegate : UIResponder <UIApplicationDelegate, UNUserNotificationCenterDelegate>
+
+// Handle notification when app is in foreground
+- (void)userNotificationCenter:(UNUserNotificationCenter *)center 
+       willPresentNotification:(UNNotification *)notification 
+         withCompletionHandler:(void (^)(UNNotificationPresentationOptions options))completionHandler {
+    // Show notification even when app is in foreground
+    completionHandler(UNNotificationPresentationOptionAlert | UNNotificationPresentationOptionSound | UNNotificationPresentationOptionBadge);
+}
+
+// Handle notification tap
+- (void)userNotificationCenter:(UNUserNotificationCenter *)center 
+didReceiveNotificationResponse:(UNNotificationResponse *)response 
+         withCompletionHandler:(void(^)(void))completionHandler {
+    NSDictionary *userInfo = response.notification.request.content.userInfo;
+    
+    // Access custom data
+    NSDictionary *customData = userInfo[@"custom_data"];
+    if (customData) {
+        NSLog(@"Custom data received: %@", customData);
+    }
+    
+    // Handle the notification response
+    NSLog(@"Notification tapped - Title: {{title}}, Body: {{body}}");
+    
+    completionHandler();
+}
+
+// MARK: - Usage Instructions
+// 1. In AppDelegate didFinishLaunchingWithOptions, add:
+//    [UNUserNotificationCenter currentNotificationCenter].delegate = self;
+//    [self requestNotificationPermission];
+//
+// 2. To schedule a notification:
+//    [self scheduleLocalNotification];
+//
+// 3. This creates LOCAL notifications that mirror APNS payload structure
+// 4. For actual PUSH notifications, implement remote notification registration
+//    and handle incoming payloads in application:didReceiveRemoteNotification:

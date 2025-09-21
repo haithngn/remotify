@@ -1,0 +1,404 @@
+const admin = require('firebase-admin');
+const fs = require('fs');
+const path = require('path');
+
+/**
+ * Firebase Cloud Messaging (FCM) Service for sending push notifications
+ */
+class FirebaseNotificationService {
+    constructor() {
+        this.isInitialized = false;
+        this.initializeFirebase();
+    }
+
+    /**
+     * Initialize Firebase Admin SDK
+     */
+    initializeFirebase() {
+        if (this.isInitialized) return;
+
+        try {
+            let credential;
+            
+            // Option 1: Using service account file path
+            const serviceAccountPath = process.env.FIREBASE_SERVICE_ACCOUNT_PATH;
+            if (serviceAccountPath && fs.existsSync(serviceAccountPath)) {
+                credential = admin.credential.cert(serviceAccountPath);
+                console.log('Firebase initialized with service account file');
+            }
+            // Option 2: Using service account JSON string
+            else if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
+                const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
+                credential = admin.credential.cert(serviceAccount);
+                console.log('Firebase initialized with service account JSON');
+            }
+            // Option 3: Using individual environment variables
+            else if (process.env.FIREBASE_PROJECT_ID && process.env.FIREBASE_CLIENT_EMAIL && process.env.FIREBASE_PRIVATE_KEY) {
+                credential = admin.credential.cert({
+                    projectId: process.env.FIREBASE_PROJECT_ID,
+                    clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+                    privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n')
+                });
+                console.log('Firebase initialized with environment variables');
+            }
+            // Option 4: Default credentials (for Google Cloud environments)
+            else {
+                credential = admin.credential.applicationDefault();
+                console.log('Firebase initialized with default credentials');
+            }
+
+            admin.initializeApp({
+                credential: credential
+            });
+
+            this.isInitialized = true;
+        } catch (error) {
+            console.error('Failed to initialize Firebase:', error.message);
+            throw new Error(`Firebase initialization failed: ${error.message}`);
+        }
+    }
+
+    /**
+     * Send push notification to a single device
+     * @param {string} deviceToken - FCM device token
+     * @param {string} title - Notification title
+     * @param {string} body - Notification body
+     * @param {Object} data - Optional custom data
+     * @param {Object} options - Additional notification options
+     * @returns {Promise<string>} Message ID if successful
+     */
+    async sendNotification(deviceToken, title, body, data = null, options = {}) {
+        try {
+            if (!deviceToken || typeof deviceToken !== 'string') {
+                throw new Error('Device token must be a non-empty string');
+            }
+
+            const message = {
+                token: deviceToken,
+                notification: {
+                    title: title || "{{title}}",
+                    body: body || "{{body}}"
+                },
+                // iOS specific configuration
+                apns: {
+                    headers: {
+                        'apns-priority': '10', // High priority
+                        'apns-push-type': 'alert'
+                    },
+                    payload: {
+                        aps: {
+                            alert: {
+                                title: title || "{{title}}",
+                                body: body || "{{body}}"
+                            },
+                            badge: options.badge || 1,
+                            sound: options.sound || 'default',
+                            'content-available': 1
+                        }
+                    }
+                },
+                // Android specific configuration
+                android: {
+                    priority: 'high',
+                    notification: {
+                        title: title || "{{title}}",
+                        body: body || "{{body}}",
+                        icon: options.icon || 'ic_notification',
+                        color: options.color || '#FF6B35',
+                        sound: options.sound || 'default',
+                        channel_id: options.channelId || 'default_channel',
+                        click_action: options.clickAction || 'FLUTTER_NOTIFICATION_CLICK'
+                    }
+                }
+            };
+
+            // Add custom data if provided
+            if (data && typeof data === 'object') {
+                message.data = {};
+                for (const [key, value] of Object.entries(data)) {
+                    message.data[key] = String(value); // FCM requires string values
+                }
+            }
+
+            // Add any additional options
+            if (options.timeToLive) {
+                message.android.ttl = options.timeToLive * 1000; // Convert to milliseconds
+                message.apns.headers['apns-expiration'] = Math.floor(Date.now() / 1000) + options.timeToLive;
+            }
+
+            const response = await admin.messaging().send(message);
+            console.log(`Successfully sent message to ${deviceToken}. Response: ${response}`);
+            
+            return response;
+        } catch (error) {
+            console.error(`Error sending notification to ${deviceToken}:`, error.message);
+            
+            // Handle specific Firebase errors
+            if (error.code) {
+                switch (error.code) {
+                    case 'messaging/invalid-argument':
+                        throw new Error(`Invalid message parameters: ${error.message}`);
+                    case 'messaging/registration-token-not-registered':
+                        throw new Error(`Device token is no longer valid: ${deviceToken}`);
+                    case 'messaging/sender-id-mismatch':
+                        throw new Error('Sender ID mismatch. Check your Firebase configuration.');
+                    case 'messaging/quota-exceeded':
+                        throw new Error('Message quota exceeded. Please try again later.');
+                    case 'messaging/authentication-error':
+                        throw new Error('Authentication failed. Check your Firebase credentials.');
+                    default:
+                        throw new Error(`Firebase messaging error (${error.code}): ${error.message}`);
+                }
+            }
+            
+            throw error;
+        }
+    }
+
+    /**
+     * Send push notification to multiple devices
+     * @param {string[]} deviceTokens - Array of FCM device tokens
+     * @param {string} title - Notification title
+     * @param {string} body - Notification body
+     * @param {Object} data - Optional custom data
+     * @param {Object} options - Additional notification options
+     * @returns {Promise<Object>} Batch response with success/failure details
+     */
+    async sendNotificationToMultiple(deviceTokens, title, body, data = null, options = {}) {
+        try {
+            if (!Array.isArray(deviceTokens) || deviceTokens.length === 0) {
+                throw new Error('Device tokens must be a non-empty array');
+            }
+
+            const validTokens = deviceTokens.filter(token => token && typeof token === 'string');
+            if (validTokens.length === 0) {
+                throw new Error('No valid device tokens provided');
+            }
+
+            const messages = validTokens.map(token => ({
+                token: token,
+                notification: {
+                    title: title || "{{title}}",
+                    body: body || "{{body}}"
+                },
+                apns: {
+                    headers: {
+                        'apns-priority': '10',
+                        'apns-push-type': 'alert'
+                    },
+                    payload: {
+                        aps: {
+                            alert: {
+                                title: title || "{{title}}",
+                                body: body || "{{body}}"
+                            },
+                            badge: options.badge || 1,
+                            sound: options.sound || 'default'
+                        }
+                    }
+                },
+                android: {
+                    priority: 'high',
+                    notification: {
+                        title: title || "{{title}}",
+                        body: body || "{{body}}",
+                        icon: options.icon || 'ic_notification',
+                        color: options.color || '#FF6B35',
+                        sound: options.sound || 'default'
+                    }
+                },
+                data: data ? Object.fromEntries(
+                    Object.entries(data).map(([k, v]) => [k, String(v)])
+                ) : undefined
+            }));
+
+            const response = await admin.messaging().sendAll(messages);
+            console.log(`Sent batch notification. Success: ${response.successCount}, Failed: ${response.failureCount}`);
+            
+            // Log failed tokens
+            response.responses.forEach((resp, index) => {
+                if (!resp.success) {
+                    console.warn(`Failed to send to token ${validTokens[index]}: ${resp.error?.message}`);
+                }
+            });
+
+            return {
+                successCount: response.successCount,
+                failureCount: response.failureCount,
+                responses: response.responses.map((resp, index) => ({
+                    token: validTokens[index],
+                    success: resp.success,
+                    messageId: resp.messageId,
+                    error: resp.error?.message
+                }))
+            };
+        } catch (error) {
+            console.error('Error sending batch notifications:', error.message);
+            throw error;
+        }
+    }
+
+    /**
+     * Send notification to a topic
+     * @param {string} topic - Firebase topic name
+     * @param {string} title - Notification title
+     * @param {string} body - Notification body
+     * @param {Object} data - Optional custom data
+     * @param {Object} options - Additional notification options
+     * @returns {Promise<string>} Message ID if successful
+     */
+    async sendToTopic(topic, title, body, data = null, options = {}) {
+        try {
+            if (!topic || typeof topic !== 'string') {
+                throw new Error('Topic must be a non-empty string');
+            }
+
+            const message = {
+                topic: topic,
+                notification: {
+                    title: title || "{{title}}",
+                    body: body || "{{body}}"
+                },
+                apns: {
+                    payload: {
+                        aps: {
+                            alert: {
+                                title: title || "{{title}}",
+                                body: body || "{{body}}"
+                            },
+                            badge: options.badge || 1,
+                            sound: options.sound || 'default'
+                        }
+                    }
+                },
+                android: {
+                    notification: {
+                        title: title || "{{title}}",
+                        body: body || "{{body}}",
+                        icon: options.icon || 'ic_notification',
+                        color: options.color || '#FF6B35'
+                    }
+                },
+                data: data ? Object.fromEntries(
+                    Object.entries(data).map(([k, v]) => [k, String(v)])
+                ) : undefined
+            };
+
+            const response = await admin.messaging().send(message);
+            console.log(`Successfully sent message to topic ${topic}. Response: ${response}`);
+            
+            return response;
+        } catch (error) {
+            console.error(`Error sending notification to topic ${topic}:`, error.message);
+            throw error;
+        }
+    }
+}
+
+// Example usage
+async function main() {
+    try {
+        // Initialize the service
+        const notificationService = new FirebaseNotificationService();
+
+        // Example 1: Send to single device
+        const deviceToken = "DEVICE_TOKEN"; // Replace with actual device token
+        const messageId = await notificationService.sendNotification(
+            deviceToken,
+            "{{title}}",
+            "{{body}}",
+            {
+                custom_key: "custom_value",
+                action: "open_screen"
+            },
+            {
+                badge: 1,
+                sound: "notification.wav",
+                icon: "custom_icon",
+                color: "#0066CC"
+            }
+        );
+        console.log(`Single notification sent with ID: ${messageId}`);
+
+        // Example 2: Send to multiple devices
+        const deviceTokens = ["TOKEN_1", "TOKEN_2", "TOKEN_3"];
+        const batchResponse = await notificationService.sendNotificationToMultiple(
+            deviceTokens,
+            "{{title}}",
+            "{{body}}",
+            { broadcast: "true" }
+        );
+        console.log(`Batch notification sent. Success: ${batchResponse.successCount}, Failed: ${batchResponse.failureCount}`);
+
+        // Example 3: Send to topic
+        const topicResponse = await notificationService.sendToTopic(
+            "news",
+            "{{title}}",
+            "{{body}}",
+            { category: "breaking" }
+        );
+        console.log(`Topic notification sent with ID: ${topicResponse}`);
+
+    } catch (error) {
+        console.error('Error:', error.message);
+        process.exit(1);
+    }
+}
+
+// Run if this file is executed directly
+if (require.main === module) {
+    main();
+}
+
+module.exports = FirebaseNotificationService;
+
+/*
+SETUP INSTRUCTIONS:
+
+1. Install Dependencies:
+   npm install firebase-admin
+
+2. Firebase Configuration (Choose one option):
+
+   Option A: Service account file path
+   export FIREBASE_SERVICE_ACCOUNT_PATH="/path/to/service-account.json"
+
+   Option B: Service account JSON string
+   export FIREBASE_SERVICE_ACCOUNT_JSON='{"type": "service_account", "project_id": "your-project"...}'
+
+   Option C: Individual environment variables
+   export FIREBASE_PROJECT_ID="your-project-id"
+   export FIREBASE_CLIENT_EMAIL="your-service-account@your-project.iam.gserviceaccount.com"
+   export FIREBASE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
+
+   Option D: Default credentials (for Google Cloud environments)
+   No additional configuration needed
+
+3. Usage:
+   const FirebaseNotificationService = require('./firebase-notification-service');
+   const service = new FirebaseNotificationService();
+   
+   // Send notification
+   await service.sendNotification('device-token', 'Title', 'Body');
+
+4. Error Handling:
+   - Invalid tokens will throw specific error messages
+   - Network errors are handled with descriptive messages
+   - Quota exceeded and authentication errors are properly categorized
+
+5. Features:
+   - Single device notifications
+   - Batch notifications (multiple devices)
+   - Topic-based notifications
+   - iOS and Android specific configurations
+   - Custom data payload support
+   - Comprehensive error handling
+   - Logging for debugging
+
+6. Best Practices:
+   - Always handle errors appropriately
+   - Use batch sending for multiple recipients
+   - Implement token refresh logic for invalid tokens
+   - Monitor quota usage and implement rate limiting
+   - Test notifications on both iOS and Android devices
+*/

@@ -1,0 +1,520 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+	"os"
+	"strconv"
+	"time"
+
+	firebase "firebase.google.com/go"
+	"firebase.google.com/go/messaging"
+	"google.golang.org/api/option"
+)
+
+// FirebaseNotificationService handles Firebase Cloud Messaging operations
+type FirebaseNotificationService struct {
+	client        *messaging.Client
+	ctx           context.Context
+	isInitialized bool
+}
+
+// NotificationOptions contains optional parameters for notifications
+type NotificationOptions struct {
+	Badge        *int               `json:"badge,omitempty"`
+	Sound        string             `json:"sound,omitempty"`
+	Icon         string             `json:"icon,omitempty"`
+	Color        string             `json:"color,omitempty"`
+	ChannelID    string             `json:"channel_id,omitempty"`
+	ClickAction  string             `json:"click_action,omitempty"`
+	TimeToLive   *int               `json:"time_to_live,omitempty"`
+	Data         map[string]string  `json:"data,omitempty"`
+}
+
+// BatchResponse contains the result of a batch notification operation
+type BatchResponse struct {
+	SuccessCount int                    `json:"success_count"`
+	FailureCount int                    `json:"failure_count"`
+	Responses    []TokenResponse        `json:"responses"`
+}
+
+// TokenResponse contains the result for a single token
+type TokenResponse struct {
+	Token     string `json:"token"`
+	Success   bool   `json:"success"`
+	MessageID string `json:"message_id,omitempty"`
+	Error     string `json:"error,omitempty"`
+}
+
+// NewFirebaseNotificationService creates a new Firebase notification service
+func NewFirebaseNotificationService() (*FirebaseNotificationService, error) {
+	service := &FirebaseNotificationService{
+		ctx: context.Background(),
+	}
+	
+	if err := service.initializeFirebase(); err != nil {
+		return nil, fmt.Errorf("failed to initialize Firebase: %w", err)
+	}
+	
+	return service, nil
+}
+
+// initializeFirebase initializes the Firebase Admin SDK
+func (f *FirebaseNotificationService) initializeFirebase() error {
+	if f.isInitialized {
+		return nil
+	}
+
+	var app *firebase.App
+	var err error
+
+	// Option 1: Using service account file path
+	if serviceAccountPath := os.Getenv("FIREBASE_SERVICE_ACCOUNT_PATH"); serviceAccountPath != "" {
+		if _, err := os.Stat(serviceAccountPath); err == nil {
+			opt := option.WithCredentialsFile(serviceAccountPath)
+			app, err = firebase.NewApp(f.ctx, nil, opt)
+			if err == nil {
+				log.Println("Firebase initialized with service account file")
+			}
+		}
+	}
+
+	// Option 2: Using service account JSON string
+	if app == nil {
+		if serviceAccountJSON := os.Getenv("FIREBASE_SERVICE_ACCOUNT_JSON"); serviceAccountJSON != "" {
+			opt := option.WithCredentialsJSON([]byte(serviceAccountJSON))
+			app, err = firebase.NewApp(f.ctx, nil, opt)
+			if err == nil {
+				log.Println("Firebase initialized with service account JSON")
+			}
+		}
+	}
+
+	// Option 3: Default credentials (for Google Cloud environments)
+	if app == nil {
+		app, err = firebase.NewApp(f.ctx, nil)
+		if err == nil {
+			log.Println("Firebase initialized with default credentials")
+		}
+	}
+
+	if err != nil {
+		return fmt.Errorf("Firebase initialization failed: %w", err)
+	}
+
+	f.client, err = app.Messaging(f.ctx)
+	if err != nil {
+		return fmt.Errorf("failed to create messaging client: %w", err)
+	}
+
+	f.isInitialized = true
+	return nil
+}
+
+// SendNotification sends a push notification to a single device
+func (f *FirebaseNotificationService) SendNotification(deviceToken, title, body string, options *NotificationOptions) (string, error) {
+	if deviceToken == "" {
+		return "", fmt.Errorf("device token cannot be empty")
+	}
+
+	if title == "" {
+		title = "{{title}}"
+	}
+	if body == "" {
+		body = "{{body}}"
+	}
+
+	// Set default options if not provided
+	if options == nil {
+		options = &NotificationOptions{}
+	}
+	if options.Sound == "" {
+		options.Sound = "default"
+	}
+	if options.Icon == "" {
+		options.Icon = "ic_notification"
+	}
+	if options.Color == "" {
+		options.Color = "#FF6B35"
+	}
+	if options.ChannelID == "" {
+		options.ChannelID = "default_channel"
+	}
+	if options.ClickAction == "" {
+		options.ClickAction = "FLUTTER_NOTIFICATION_CLICK"
+	}
+	if options.Badge == nil {
+		badge := 1
+		options.Badge = &badge
+	}
+
+	// Build the message
+	message := &messaging.Message{
+		Token: deviceToken,
+		Notification: &messaging.Notification{
+			Title: title,
+			Body:  body,
+		},
+		// iOS specific configuration
+		APNS: &messaging.APNSConfig{
+			Headers: map[string]string{
+				"apns-priority":   "10", // High priority
+				"apns-push-type":  "alert",
+			},
+			Payload: &messaging.APNSPayload{
+				Aps: &messaging.Aps{
+					Alert: &messaging.ApsAlert{
+						Title: title,
+						Body:  body,
+					},
+					Badge:            options.Badge,
+					Sound:            options.Sound,
+					ContentAvailable: true,
+				},
+			},
+		},
+		// Android specific configuration
+		Android: &messaging.AndroidConfig{
+			Priority: "high",
+			Notification: &messaging.AndroidNotification{
+				Title:       title,
+				Body:        body,
+				Icon:        options.Icon,
+				Color:       options.Color,
+				Sound:       options.Sound,
+				ChannelID:   options.ChannelID,
+				ClickAction: options.ClickAction,
+			},
+		},
+	}
+
+	// Add custom data if provided
+	if options.Data != nil && len(options.Data) > 0 {
+		message.Data = options.Data
+	}
+
+	// Add TTL if specified
+	if options.TimeToLive != nil {
+		ttlDuration := time.Duration(*options.TimeToLive) * time.Second
+		message.Android.TTL = &ttlDuration
+		
+		// For APNS, set expiration timestamp
+		expirationTime := time.Now().Add(ttlDuration).Unix()
+		message.APNS.Headers["apns-expiration"] = strconv.FormatInt(expirationTime, 10)
+	}
+
+	response, err := f.client.Send(f.ctx, message)
+	if err != nil {
+		// Handle specific Firebase errors
+		if messaging.IsInvalidArgument(err) {
+			return "", fmt.Errorf("invalid message parameters: %w", err)
+		}
+		if messaging.IsRegistrationTokenNotRegistered(err) {
+			return "", fmt.Errorf("device token is no longer valid: %s", deviceToken)
+		}
+		if messaging.IsSenderIDMismatch(err) {
+			return "", fmt.Errorf("sender ID mismatch. Check your Firebase configuration")
+		}
+		if messaging.IsQuotaExceeded(err) {
+			return "", fmt.Errorf("message quota exceeded. Please try again later")
+		}
+		if messaging.IsUnavailable(err) {
+			return "", fmt.Errorf("FCM service is temporarily unavailable")
+		}
+		return "", fmt.Errorf("Firebase messaging error: %w", err)
+	}
+
+	log.Printf("Successfully sent message to %s. Response: %s", deviceToken, response)
+	return response, nil
+}
+
+// SendNotificationToMultiple sends push notifications to multiple devices
+func (f *FirebaseNotificationService) SendNotificationToMultiple(deviceTokens []string, title, body string, options *NotificationOptions) (*BatchResponse, error) {
+	if len(deviceTokens) == 0 {
+		return nil, fmt.Errorf("device tokens list cannot be empty")
+	}
+
+	// Filter out empty tokens
+	validTokens := make([]string, 0, len(deviceTokens))
+	for _, token := range deviceTokens {
+		if token != "" {
+			validTokens = append(validTokens, token)
+		}
+	}
+
+	if len(validTokens) == 0 {
+		return nil, fmt.Errorf("no valid device tokens provided")
+	}
+
+	if title == "" {
+		title = "{{title}}"
+	}
+	if body == "" {
+		body = "{{body}}"
+	}
+
+	// Set default options if not provided
+	if options == nil {
+		options = &NotificationOptions{}
+	}
+	if options.Sound == "" {
+		options.Sound = "default"
+	}
+	if options.Icon == "" {
+		options.Icon = "ic_notification"
+	}
+	if options.Color == "" {
+		options.Color = "#FF6B35"
+	}
+	if options.Badge == nil {
+		badge := 1
+		options.Badge = &badge
+	}
+
+	// Build messages for all tokens
+	messages := make([]*messaging.Message, len(validTokens))
+	for i, token := range validTokens {
+		messages[i] = &messaging.Message{
+			Token: token,
+			Notification: &messaging.Notification{
+				Title: title,
+				Body:  body,
+			},
+			APNS: &messaging.APNSConfig{
+				Headers: map[string]string{
+					"apns-priority":  "10",
+					"apns-push-type": "alert",
+				},
+				Payload: &messaging.APNSPayload{
+					Aps: &messaging.Aps{
+						Alert: &messaging.ApsAlert{
+							Title: title,
+							Body:  body,
+						},
+						Badge: options.Badge,
+						Sound: options.Sound,
+					},
+				},
+			},
+			Android: &messaging.AndroidConfig{
+				Priority: "high",
+				Notification: &messaging.AndroidNotification{
+					Title: title,
+					Body:  body,
+					Icon:  options.Icon,
+					Color: options.Color,
+					Sound: options.Sound,
+				},
+			},
+			Data: options.Data,
+		}
+	}
+
+	batchResponse, err := f.client.SendAll(f.ctx, messages)
+	if err != nil {
+		return nil, fmt.Errorf("error sending batch notifications: %w", err)
+	}
+
+	log.Printf("Sent batch notification. Success: %d, Failed: %d", batchResponse.SuccessCount, batchResponse.FailureCount)
+
+	// Create response with details
+	responses := make([]TokenResponse, len(validTokens))
+	for i, response := range batchResponse.Responses {
+		responses[i] = TokenResponse{
+			Token:   validTokens[i],
+			Success: response.Success,
+		}
+		
+		if response.Success {
+			responses[i].MessageID = response.MessageID
+		} else {
+			responses[i].Error = response.Error.Error()
+			log.Printf("Failed to send to token %s: %s", validTokens[i], response.Error.Error())
+		}
+	}
+
+	return &BatchResponse{
+		SuccessCount: batchResponse.SuccessCount,
+		FailureCount: batchResponse.FailureCount,
+		Responses:    responses,
+	}, nil
+}
+
+// SendToTopic sends a notification to a Firebase topic
+func (f *FirebaseNotificationService) SendToTopic(topic, title, body string, options *NotificationOptions) (string, error) {
+	if topic == "" {
+		return "", fmt.Errorf("topic cannot be empty")
+	}
+
+	if title == "" {
+		title = "{{title}}"
+	}
+	if body == "" {
+		body = "{{body}}"
+	}
+
+	// Set default options if not provided
+	if options == nil {
+		options = &NotificationOptions{}
+	}
+	if options.Sound == "" {
+		options.Sound = "default"
+	}
+	if options.Icon == "" {
+		options.Icon = "ic_notification"
+	}
+	if options.Color == "" {
+		options.Color = "#FF6B35"
+	}
+	if options.Badge == nil {
+		badge := 1
+		options.Badge = &badge
+	}
+
+	message := &messaging.Message{
+		Topic: topic,
+		Notification: &messaging.Notification{
+			Title: title,
+			Body:  body,
+		},
+		APNS: &messaging.APNSConfig{
+			Payload: &messaging.APNSPayload{
+				Aps: &messaging.Aps{
+					Alert: &messaging.ApsAlert{
+						Title: title,
+						Body:  body,
+					},
+					Badge: options.Badge,
+					Sound: options.Sound,
+				},
+			},
+		},
+		Android: &messaging.AndroidConfig{
+			Notification: &messaging.AndroidNotification{
+				Title: title,
+				Body:  body,
+				Icon:  options.Icon,
+				Color: options.Color,
+			},
+		},
+		Data: options.Data,
+	}
+
+	response, err := f.client.Send(f.ctx, message)
+	if err != nil {
+		return "", fmt.Errorf("error sending notification to topic %s: %w", topic, err)
+	}
+
+	log.Printf("Successfully sent message to topic %s. Response: %s", topic, response)
+	return response, nil
+}
+
+func main() {
+	// Example usage
+	service, err := NewFirebaseNotificationService()
+	if err != nil {
+		log.Fatalf("Failed to initialize Firebase service: %v", err)
+	}
+
+	// Example 1: Send to single device
+	deviceToken := "DEVICE_TOKEN" // Replace with actual device token
+	options := &NotificationOptions{
+		Data: map[string]string{
+			"custom_key": "custom_value",
+			"action":     "open_screen",
+		},
+		Badge:       &[]int{1}[0],
+		Sound:       "notification.wav",
+		Icon:        "custom_icon",
+		Color:       "#0066CC",
+		ClickAction: "MAIN_ACTIVITY",
+	}
+
+	messageID, err := service.SendNotification(deviceToken, "{{title}}", "{{body}}", options)
+	if err != nil {
+		log.Printf("Error sending single notification: %v", err)
+	} else {
+		fmt.Printf("Single notification sent with ID: %s\n", messageID)
+	}
+
+	// Example 2: Send to multiple devices
+	deviceTokens := []string{"TOKEN_1", "TOKEN_2", "TOKEN_3"}
+	batchOptions := &NotificationOptions{
+		Data: map[string]string{"broadcast": "true"},
+	}
+
+	batchResponse, err := service.SendNotificationToMultiple(deviceTokens, "{{title}}", "{{body}}", batchOptions)
+	if err != nil {
+		log.Printf("Error sending batch notifications: %v", err)
+	} else {
+		fmt.Printf("Batch notification sent. Success: %d, Failed: %d\n", 
+			batchResponse.SuccessCount, batchResponse.FailureCount)
+	}
+
+	// Example 3: Send to topic
+	topicOptions := &NotificationOptions{
+		Data: map[string]string{"category": "breaking"},
+	}
+
+	topicResponse, err := service.SendToTopic("news", "{{title}}", "{{body}}", topicOptions)
+	if err != nil {
+		log.Printf("Error sending topic notification: %v", err)
+	} else {
+		fmt.Printf("Topic notification sent with ID: %s\n", topicResponse)
+	}
+}
+
+/*
+SETUP INSTRUCTIONS:
+
+1. Install Dependencies:
+   go mod init your-project-name
+   go get firebase.google.com/go
+   go get google.golang.org/api/option
+
+2. Firebase Configuration (Choose one option):
+
+   Option A: Service account file path
+   export FIREBASE_SERVICE_ACCOUNT_PATH="/path/to/service-account.json"
+
+   Option B: Service account JSON string
+   export FIREBASE_SERVICE_ACCOUNT_JSON='{"type": "service_account", "project_id": "your-project"...}'
+
+   Option C: Default credentials (for Google Cloud environments)
+   No additional configuration needed
+
+3. Usage:
+   service, err := NewFirebaseNotificationService()
+   if err != nil {
+       log.Fatal(err)
+   }
+   
+   messageID, err := service.SendNotification("device-token", "Title", "Body", nil)
+
+4. Error Handling:
+   - Invalid tokens return specific error messages
+   - Network errors are handled with descriptive messages
+   - Quota exceeded and authentication errors are properly categorized
+   - All errors are logged for debugging
+
+5. Features:
+   - Single device notifications
+   - Batch notifications (multiple devices) with detailed responses
+   - Topic-based notifications
+   - iOS and Android specific configurations
+   - Custom data payload support
+   - TTL (Time To Live) support
+   - Comprehensive error handling and logging
+   - Structured response types with JSON tags
+
+6. Best Practices:
+   - Always handle errors appropriately
+   - Use batch sending for multiple recipients (more efficient)
+   - Implement token refresh logic for invalid tokens
+   - Monitor quota usage and implement rate limiting
+   - Test notifications on both iOS and Android devices
+   - Use structured logging for better observability
+   - Set appropriate TTL values for time-sensitive notifications
+*/

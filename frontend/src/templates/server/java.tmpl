@@ -1,0 +1,554 @@
+import com.google.auth.oauth2.GoogleCredentials;
+import com.google.firebase.FirebaseApp;
+import com.google.firebase.FirebaseOptions;
+import com.google.firebase.messaging.*;
+import java.io.FileInputStream;
+import java.io.IOException;
+import java.io.ByteArrayInputStream;
+import java.util.*;
+import java.util.concurrent.ExecutionException;
+import java.util.logging.Logger;
+import java.util.logging.Level;
+
+/**
+ * Firebase Cloud Messaging (FCM) Service for sending push notifications
+ */
+public class FirebaseNotificationService {
+    private static final Logger logger = Logger.getLogger(FirebaseNotificationService.class.getName());
+    private static boolean isInitialized = false;
+
+    /**
+     * Notification options for customizing push notifications
+     */
+    public static class NotificationOptions {
+        private Integer badge;
+        private String sound = "default";
+        private String icon = "ic_notification";
+        private String color = "#FF6B35";
+        private String channelId = "default_channel";
+        private String clickAction = "FLUTTER_NOTIFICATION_CLICK";
+        private Integer timeToLive;
+        private Map<String, String> data;
+
+        // Constructors
+        public NotificationOptions() {}
+
+        public NotificationOptions(Map<String, String> data) {
+            this.data = data;
+        }
+
+        // Getters and setters
+        public Integer getBadge() { return badge; }
+        public void setBadge(Integer badge) { this.badge = badge; }
+
+        public String getSound() { return sound; }
+        public void setSound(String sound) { this.sound = sound; }
+
+        public String getIcon() { return icon; }
+        public void setIcon(String icon) { this.icon = icon; }
+
+        public String getColor() { return color; }
+        public void setColor(String color) { this.color = color; }
+
+        public String getChannelId() { return channelId; }
+        public void setChannelId(String channelId) { this.channelId = channelId; }
+
+        public String getClickAction() { return clickAction; }
+        public void setClickAction(String clickAction) { this.clickAction = clickAction; }
+
+        public Integer getTimeToLive() { return timeToLive; }
+        public void setTimeToLive(Integer timeToLive) { this.timeToLive = timeToLive; }
+
+        public Map<String, String> getData() { return data; }
+        public void setData(Map<String, String> data) { this.data = data; }
+
+        // Builder pattern methods
+        public NotificationOptions withBadge(Integer badge) { this.badge = badge; return this; }
+        public NotificationOptions withSound(String sound) { this.sound = sound; return this; }
+        public NotificationOptions withIcon(String icon) { this.icon = icon; return this; }
+        public NotificationOptions withColor(String color) { this.color = color; return this; }
+        public NotificationOptions withChannelId(String channelId) { this.channelId = channelId; return this; }
+        public NotificationOptions withClickAction(String clickAction) { this.clickAction = clickAction; return this; }
+        public NotificationOptions withTimeToLive(Integer timeToLive) { this.timeToLive = timeToLive; return this; }
+        public NotificationOptions withData(Map<String, String> data) { this.data = data; return this; }
+    }
+
+    /**
+     * Response for batch notification operations
+     */
+    public static class BatchNotificationResponse {
+        private final int successCount;
+        private final int failureCount;
+        private final List<TokenResponse> responses;
+
+        public BatchNotificationResponse(int successCount, int failureCount, List<TokenResponse> responses) {
+            this.successCount = successCount;
+            this.failureCount = failureCount;
+            this.responses = responses;
+        }
+
+        public int getSuccessCount() { return successCount; }
+        public int getFailureCount() { return failureCount; }
+        public List<TokenResponse> getResponses() { return responses; }
+    }
+
+    /**
+     * Response for individual token notifications
+     */
+    public static class TokenResponse {
+        private final String token;
+        private final boolean success;
+        private final String messageId;
+        private final String error;
+
+        public TokenResponse(String token, boolean success, String messageId, String error) {
+            this.token = token;
+            this.success = success;
+            this.messageId = messageId;
+            this.error = error;
+        }
+
+        public String getToken() { return token; }
+        public boolean isSuccess() { return success; }
+        public String getMessageId() { return messageId; }
+        public String getError() { return error; }
+    }
+
+    /**
+     * Initialize Firebase Admin SDK
+     */
+    public static void initializeFirebase() throws IOException {
+        if (isInitialized) return;
+
+        GoogleCredentials credentials = null;
+        String initMethod = "unknown";
+
+        try {
+            // Option 1: Using service account file path
+            String serviceAccountPath = System.getenv("FIREBASE_SERVICE_ACCOUNT_PATH");
+            if (serviceAccountPath != null && !serviceAccountPath.isEmpty()) {
+                try (FileInputStream serviceAccount = new FileInputStream(serviceAccountPath)) {
+                    credentials = GoogleCredentials.fromStream(serviceAccount);
+                    initMethod = "service account file";
+                }
+            }
+
+            // Option 2: Using service account JSON string
+            if (credentials == null) {
+                String serviceAccountJson = System.getenv("FIREBASE_SERVICE_ACCOUNT_JSON");
+                if (serviceAccountJson != null && !serviceAccountJson.isEmpty()) {
+                    try (ByteArrayInputStream stream = new ByteArrayInputStream(serviceAccountJson.getBytes())) {
+                        credentials = GoogleCredentials.fromStream(stream);
+                        initMethod = "service account JSON";
+                    }
+                }
+            }
+
+            // Option 3: Default credentials (for Google Cloud environments)
+            if (credentials == null) {
+                credentials = GoogleCredentials.getApplicationDefault();
+                initMethod = "default credentials";
+            }
+
+            FirebaseOptions options = FirebaseOptions.builder()
+                    .setCredentials(credentials)
+                    .build();
+
+            FirebaseApp.initializeApp(options);
+            isInitialized = true;
+
+            logger.info("Firebase initialized with " + initMethod);
+
+        } catch (IOException e) {
+            logger.log(Level.SEVERE, "Failed to initialize Firebase", e);
+            throw new RuntimeException("Firebase initialization failed: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Send push notification to a single device
+     *
+     * @param deviceToken FCM device token
+     * @param title       Notification title
+     * @param body        Notification body
+     * @param options     Optional notification options
+     * @return Message ID if successful
+     * @throws Exception if sending fails
+     */
+    public static String sendNotification(String deviceToken, String title, String body, NotificationOptions options) 
+            throws Exception {
+        
+        initializeFirebase();
+
+        if (deviceToken == null || deviceToken.trim().isEmpty()) {
+            throw new IllegalArgumentException("Device token cannot be null or empty");
+        }
+
+        if (title == null || title.isEmpty()) title = "{{title}}";
+        if (body == null || body.isEmpty()) body = "{{body}}";
+        if (options == null) options = new NotificationOptions();
+
+        try {
+            // Build the message
+            Message.Builder messageBuilder = Message.builder()
+                    .setToken(deviceToken)
+                    .setNotification(Notification.builder()
+                            .setTitle(title)
+                            .setBody(body)
+                            .build())
+                    // iOS specific configuration
+                    .setApnsConfig(ApnsConfig.builder()
+                            .putHeader("apns-priority", "10") // High priority
+                            .putHeader("apns-push-type", "alert")
+                            .setAps(Aps.builder()
+                                    .setAlert(ApsAlert.builder()
+                                            .setTitle(title)
+                                            .setBody(body)
+                                            .build())
+                                    .setBadge(options.getBadge() != null ? options.getBadge() : 1)
+                                    .setSound(options.getSound())
+                                    .setContentAvailable(true)
+                                    .build())
+                            .build())
+                    // Android specific configuration
+                    .setAndroidConfig(AndroidConfig.builder()
+                            .setPriority(AndroidConfig.Priority.HIGH)
+                            .setNotification(AndroidNotification.builder()
+                                    .setTitle(title)
+                                    .setBody(body)
+                                    .setIcon(options.getIcon())
+                                    .setColor(options.getColor())
+                                    .setSound(options.getSound())
+                                    .setChannelId(options.getChannelId())
+                                    .setClickAction(options.getClickAction())
+                                    .build())
+                            .build());
+
+            // Add custom data if provided
+            if (options.getData() != null && !options.getData().isEmpty()) {
+                messageBuilder.putAllData(options.getData());
+            }
+
+            // Add TTL if specified
+            if (options.getTimeToLive() != null) {
+                messageBuilder.setAndroidConfig(
+                    messageBuilder.build().getAndroidConfig().toBuilder()
+                        .setTtl(options.getTimeToLive() * 1000L) // Convert to milliseconds
+                        .build()
+                );
+
+                // For APNS, add expiration header
+                long expirationTime = System.currentTimeMillis() / 1000 + options.getTimeToLive();
+                messageBuilder.setApnsConfig(
+                    messageBuilder.build().getApnsConfig().toBuilder()
+                        .putHeader("apns-expiration", String.valueOf(expirationTime))
+                        .build()
+                );
+            }
+
+            Message message = messageBuilder.build();
+            String response = FirebaseMessaging.getInstance().send(message);
+
+            logger.info("Successfully sent message to " + deviceToken + ". Response: " + response);
+            return response;
+
+        } catch (FirebaseMessagingException e) {
+            logger.log(Level.SEVERE, "Firebase messaging error when sending to " + deviceToken, e);
+            
+            // Handle specific error codes
+            switch (e.getErrorCode()) {
+                case INVALID_ARGUMENT:
+                    throw new IllegalArgumentException("Invalid message parameters: " + e.getMessage(), e);
+                case UNREGISTERED:
+                    throw new IllegalStateException("Device token is no longer valid: " + deviceToken, e);
+                case SENDER_ID_MISMATCH:
+                    throw new SecurityException("Sender ID mismatch. Check your Firebase configuration.", e);
+                case QUOTA_EXCEEDED:
+                    throw new RuntimeException("Message quota exceeded. Please try again later.", e);
+                case UNAVAILABLE:
+                    throw new RuntimeException("FCM service is temporarily unavailable.", e);
+                default:
+                    throw new RuntimeException("Firebase messaging error (" + e.getErrorCode() + "): " + e.getMessage(), e);
+            }
+        } catch (Exception e) {
+            logger.log(Level.SEVERE, "Unexpected error when sending notification to " + deviceToken, e);
+            throw e;
+        }
+    }
+
+    /**
+     * Send push notification to multiple devices
+     *
+     * @param deviceTokens List of FCM device tokens
+     * @param title        Notification title
+     * @param body         Notification body
+     * @param options      Optional notification options
+     * @return Batch response with success/failure details
+     * @throws Exception if sending fails
+     */
+    public static BatchNotificationResponse sendNotificationToMultiple(List<String> deviceTokens, String title, String body, NotificationOptions options) 
+            throws Exception {
+        
+        initializeFirebase();
+
+        if (deviceTokens == null || deviceTokens.isEmpty()) {
+            throw new IllegalArgumentException("Device tokens list cannot be null or empty");
+        }
+
+        // Filter out empty tokens
+        List<String> validTokens = new ArrayList<>();
+        for (String token : deviceTokens) {
+            if (token != null && !token.trim().isEmpty()) {
+                validTokens.add(token);
+            }
+        }
+
+        if (validTokens.isEmpty()) {
+            throw new IllegalArgumentException("No valid device tokens provided");
+        }
+
+        if (title == null || title.isEmpty()) title = "{{title}}";
+        if (body == null || body.isEmpty()) body = "{{body}}";
+        if (options == null) options = new NotificationOptions();
+
+        try {
+            List<Message> messages = new ArrayList<>();
+            
+            for (String token : validTokens) {
+                Message.Builder messageBuilder = Message.builder()
+                        .setToken(token)
+                        .setNotification(Notification.builder()
+                                .setTitle(title)
+                                .setBody(body)
+                                .build())
+                        .setApnsConfig(ApnsConfig.builder()
+                                .putHeader("apns-priority", "10")
+                                .putHeader("apns-push-type", "alert")
+                                .setAps(Aps.builder()
+                                        .setAlert(ApsAlert.builder()
+                                                .setTitle(title)
+                                                .setBody(body)
+                                                .build())
+                                        .setBadge(options.getBadge() != null ? options.getBadge() : 1)
+                                        .setSound(options.getSound())
+                                        .build())
+                                .build())
+                        .setAndroidConfig(AndroidConfig.builder()
+                                .setPriority(AndroidConfig.Priority.HIGH)
+                                .setNotification(AndroidNotification.builder()
+                                        .setTitle(title)
+                                        .setBody(body)
+                                        .setIcon(options.getIcon())
+                                        .setColor(options.getColor())
+                                        .setSound(options.getSound())
+                                        .build())
+                                .build());
+
+                if (options.getData() != null && !options.getData().isEmpty()) {
+                    messageBuilder.putAllData(options.getData());
+                }
+
+                messages.add(messageBuilder.build());
+            }
+
+            BatchResponse batchResponse = FirebaseMessaging.getInstance().sendAll(messages);
+            logger.info("Sent batch notification. Success: " + batchResponse.getSuccessCount() + 
+                       ", Failed: " + batchResponse.getFailureCount());
+
+            // Create detailed response
+            List<TokenResponse> responses = new ArrayList<>();
+            List<SendResponse> sendResponses = batchResponse.getResponses();
+            
+            for (int i = 0; i < validTokens.size(); i++) {
+                SendResponse sendResponse = sendResponses.get(i);
+                String token = validTokens.get(i);
+                
+                if (sendResponse.isSuccessful()) {
+                    responses.add(new TokenResponse(token, true, sendResponse.getMessageId(), null));
+                } else {
+                    String errorMessage = sendResponse.getException().getMessage();
+                    responses.add(new TokenResponse(token, false, null, errorMessage));
+                    logger.warning("Failed to send to token " + token + ": " + errorMessage);
+                }
+            }
+
+            return new BatchNotificationResponse(
+                    batchResponse.getSuccessCount(),
+                    batchResponse.getFailureCount(),
+                    responses
+            );
+
+        } catch (Exception e) {
+            logger.log(Level.SEVERE, "Error sending batch notifications", e);
+            throw e;
+        }
+    }
+
+    /**
+     * Send notification to a Firebase topic
+     *
+     * @param topic   Firebase topic name
+     * @param title   Notification title
+     * @param body    Notification body
+     * @param options Optional notification options
+     * @return Message ID if successful
+     * @throws Exception if sending fails
+     */
+    public static String sendToTopic(String topic, String title, String body, NotificationOptions options) throws Exception {
+        initializeFirebase();
+
+        if (topic == null || topic.trim().isEmpty()) {
+            throw new IllegalArgumentException("Topic cannot be null or empty");
+        }
+
+        if (title == null || title.isEmpty()) title = "{{title}}";
+        if (body == null || body.isEmpty()) body = "{{body}}";
+        if (options == null) options = new NotificationOptions();
+
+        try {
+            Message.Builder messageBuilder = Message.builder()
+                    .setTopic(topic)
+                    .setNotification(Notification.builder()
+                            .setTitle(title)
+                            .setBody(body)
+                            .build())
+                    .setApnsConfig(ApnsConfig.builder()
+                            .setAps(Aps.builder()
+                                    .setAlert(ApsAlert.builder()
+                                            .setTitle(title)
+                                            .setBody(body)
+                                            .build())
+                                    .setBadge(options.getBadge() != null ? options.getBadge() : 1)
+                                    .setSound(options.getSound())
+                                    .build())
+                            .build())
+                    .setAndroidConfig(AndroidConfig.builder()
+                            .setNotification(AndroidNotification.builder()
+                                    .setTitle(title)
+                                    .setBody(body)
+                                    .setIcon(options.getIcon())
+                                    .setColor(options.getColor())
+                                    .build())
+                            .build());
+
+            if (options.getData() != null && !options.getData().isEmpty()) {
+                messageBuilder.putAllData(options.getData());
+            }
+
+            Message message = messageBuilder.build();
+            String response = FirebaseMessaging.getInstance().send(message);
+
+            logger.info("Successfully sent message to topic " + topic + ". Response: " + response);
+            return response;
+
+        } catch (Exception e) {
+            logger.log(Level.SEVERE, "Error sending notification to topic " + topic, e);
+            throw e;
+        }
+    }
+
+    /**
+     * Example usage of the Firebase Notification Service
+     */
+    public static void main(String[] args) {
+        try {
+            // Example 1: Send to single device
+            String deviceToken = "DEVICE_TOKEN"; // Replace with actual device token
+            NotificationOptions options = new NotificationOptions()
+                    .withBadge(1)
+                    .withSound("notification.wav")
+                    .withIcon("custom_icon")
+                    .withColor("#0066CC")
+                    .withData(Map.of(
+                            "custom_key", "custom_value",
+                            "action", "open_screen"
+                    ));
+
+            String messageId = sendNotification(deviceToken, "{{title}}", "{{body}}", options);
+            System.out.println("Single notification sent with ID: " + messageId);
+
+            // Example 2: Send to multiple devices
+            List<String> deviceTokens = Arrays.asList("TOKEN_1", "TOKEN_2", "TOKEN_3");
+            NotificationOptions batchOptions = new NotificationOptions()
+                    .withData(Map.of("broadcast", "true"));
+
+            BatchNotificationResponse batchResponse = sendNotificationToMultiple(
+                    deviceTokens, "{{title}}", "{{body}}", batchOptions);
+            System.out.println("Batch notification sent. Success: " + batchResponse.getSuccessCount() + 
+                             ", Failed: " + batchResponse.getFailureCount());
+
+            // Example 3: Send to topic
+            NotificationOptions topicOptions = new NotificationOptions()
+                    .withData(Map.of("category", "breaking"));
+
+            String topicResponse = sendToTopic("news", "{{title}}", "{{body}}", topicOptions);
+            System.out.println("Topic notification sent with ID: " + topicResponse);
+
+        } catch (Exception e) {
+            logger.log(Level.SEVERE, "Error in main method", e);
+            System.err.println("Error: " + e.getMessage());
+            System.exit(1);
+        }
+    }
+}
+
+/*
+SETUP INSTRUCTIONS:
+
+1. Add Dependencies (Maven):
+   <dependency>
+       <groupId>com.google.firebase</groupId>
+       <artifactId>firebase-admin</artifactId>
+       <version>9.2.0</version>
+   </dependency>
+
+   Or (Gradle):
+   implementation 'com.google.firebase:firebase-admin:9.2.0'
+
+2. Firebase Configuration (Choose one option):
+
+   Option A: Service account file path
+   System.setProperty("FIREBASE_SERVICE_ACCOUNT_PATH", "/path/to/service-account.json");
+   OR
+   export FIREBASE_SERVICE_ACCOUNT_PATH="/path/to/service-account.json"
+
+   Option B: Service account JSON string
+   System.setProperty("FIREBASE_SERVICE_ACCOUNT_JSON", "{\"type\": \"service_account\", \"project_id\": \"your-project\"...}");
+   OR
+   export FIREBASE_SERVICE_ACCOUNT_JSON='{"type": "service_account", "project_id": "your-project"...}'
+
+   Option C: Default credentials (for Google Cloud environments)
+   No additional configuration needed
+
+3. Usage:
+   FirebaseNotificationService.initializeFirebase();
+   String messageId = FirebaseNotificationService.sendNotification("device-token", "Title", "Body", null);
+
+4. Error Handling:
+   - InvalidArgumentException for invalid parameters
+   - IllegalStateException for invalid tokens
+   - SecurityException for authentication issues
+   - RuntimeException for quota and service issues
+   - All errors are logged with appropriate levels
+
+5. Features:
+   - Single device notifications with comprehensive configuration
+   - Batch notifications (multiple devices) with detailed responses
+   - Topic-based notifications
+   - iOS and Android specific configurations
+   - Custom data payload support
+   - TTL (Time To Live) support
+   - Builder pattern for easy configuration
+   - Comprehensive error handling and logging
+   - Thread-safe singleton pattern for Firebase initialization
+
+6. Best Practices:
+   - Initialize Firebase once at application startup
+   - Always handle exceptions appropriately
+   - Use batch sending for multiple recipients (more efficient)
+   - Implement token refresh logic for invalid tokens
+   - Monitor quota usage and implement rate limiting
+   - Test notifications on both iOS and Android devices
+   - Use structured logging for better observability
+   - Set appropriate TTL values for time-sensitive notifications
+*/

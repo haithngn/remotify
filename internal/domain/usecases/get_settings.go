@@ -8,30 +8,32 @@ import (
 )
 
 type appSettings struct {
-	ServiceAccount  string `json:"service_account" binding:"required"`
-	P8              string `json:"p8" binding:"required"`
-	TeamId          string `json:"team_id" binding:"required"`
-	KeyId           string `json:"key_id" binding:"required"`
-	P12             string `json:"p12" binding:"required"`
-	DecryptPassword string `json:"decrypt_password" binding:"required"`
-	APNSMode        string `json:"apns_mode" binding:"required"`
-	JWTAPNSMode     string `json:"jwt_apns_mode" binding:"required"`
-	APNSType        string `json:"apns_type" binding:"required"`
-	ThemeMode       string `json:"theme_mode" binding:"required"`
+	ServiceAccount         string `json:"service_account" binding:"required"`
+	P8                     string `json:"p8" binding:"required"`
+	TeamId                 string `json:"team_id" binding:"required"`
+	KeyId                  string `json:"key_id" binding:"required"`
+	P12                    string `json:"p12" binding:"required"`
+	DecryptPassword        string `json:"decrypt_password" binding:"required"`
+	APNSMode               string `json:"apns_mode" binding:"required"`
+	JWTAPNSMode            string `json:"jwt_apns_mode" binding:"required"`
+	APNSType               string `json:"apns_type" binding:"required"`
+	ThemeMode              string `json:"theme_mode" binding:"required"`
+	CodeGenerationEnabled  bool   `json:"code_generation_enabled" binding:"required"`
 }
 
 func GetSettings(db *gorm.DB) string {
 	settings := appSettings{
-		ServiceAccount:  getSettingValueOrEmpty(values.SettingTypeServiceAccount, db),
-		P8:              getSettingValueOrEmpty(values.SettingTypeAPNSJWTFilePath, db),
-		TeamId:          getSettingValueOrEmpty(values.SettingTypeAppleDeveloperTeamID, db),
-		KeyId:           getSettingValueOrEmpty(values.SettingTypeAppleDeveloperKeyID, db),
-		P12:             getSettingValueOrEmpty(values.SettingTypeAppleCertificateFilePath, db),
-		DecryptPassword: getSettingValueOrEmpty(values.SettingTypeAppleCertificateDecryptPassword, db),
-		APNSMode:        getSettingValueOrEmpty(values.SettingTypeAPNSLegacyEnvironment, db),
-		JWTAPNSMode:     getSettingValueOrEmpty(values.SettingTypeJWTAPNSEnvironment, db),
-		APNSType:        getSettingValueOrEmpty(values.SettingTypeAPNSType, db),
-		ThemeMode:       getSettingValueOrEmpty(values.SettingTypeThemeMode, db),
+		ServiceAccount:        getSettingValueOrEmpty(values.SettingTypeServiceAccount, db),
+		P8:                    getSettingValueOrEmpty(values.SettingTypeAPNSJWTFilePath, db),
+		TeamId:                getSettingValueOrEmpty(values.SettingTypeAppleDeveloperTeamID, db),
+		KeyId:                 getSettingValueOrEmpty(values.SettingTypeAppleDeveloperKeyID, db),
+		P12:                   getSettingValueOrEmpty(values.SettingTypeAppleCertificateFilePath, db),
+		DecryptPassword:       getSettingValueOrEmpty(values.SettingTypeAppleCertificateDecryptPassword, db),
+		APNSMode:              getSettingValueOrEmpty(values.SettingTypeAPNSLegacyEnvironment, db),
+		JWTAPNSMode:           getSettingValueOrEmpty(values.SettingTypeJWTAPNSEnvironment, db),
+		APNSType:              getSettingValueOrEmpty(values.SettingTypeAPNSType, db),
+		ThemeMode:             getSettingValueOrEmpty(values.SettingTypeThemeMode, db),
+		CodeGenerationEnabled: getSettingValueInBooleanOrFalse(values.SettingTypeCodeGenerationEnabled, db),
 	}
 	return values.Succeed(settings)
 }

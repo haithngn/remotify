@@ -1,0 +1,450 @@
+import os
+import json
+import logging
+from typing import Dict, List, Optional, Union
+from firebase_admin import messaging, credentials, initialize_app
+import firebase_admin
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+
+class FirebaseNotificationService:
+    """
+    Firebase Cloud Messaging (FCM) Service for sending push notifications
+    """
+    
+    def __init__(self):
+        self._is_initialized = False
+        self._initialize_firebase()
+    
+    def _initialize_firebase(self):
+        """Initialize Firebase Admin SDK"""
+        if self._is_initialized:
+            return
+            
+        try:
+            cred = None
+            
+            # Option 1: Using service account file path
+            service_account_path = os.getenv('FIREBASE_SERVICE_ACCOUNT_PATH')
+            if service_account_path and os.path.exists(service_account_path):
+                cred = credentials.Certificate(service_account_path)
+                logger.info("Firebase initialized with service account file")
+            
+            # Option 2: Using service account JSON string
+            elif os.getenv('FIREBASE_SERVICE_ACCOUNT_JSON'):
+                service_account_info = json.loads(os.getenv('FIREBASE_SERVICE_ACCOUNT_JSON'))
+                cred = credentials.Certificate(service_account_info)
+                logger.info("Firebase initialized with service account JSON")
+            
+            # Option 3: Using individual environment variables
+            elif all([os.getenv('FIREBASE_PROJECT_ID'), 
+                     os.getenv('FIREBASE_CLIENT_EMAIL'), 
+                     os.getenv('FIREBASE_PRIVATE_KEY')]):
+                service_account_info = {
+                    "type": "service_account",
+                    "project_id": os.getenv('FIREBASE_PROJECT_ID'),
+                    "client_email": os.getenv('FIREBASE_CLIENT_EMAIL'),
+                    "private_key": os.getenv('FIREBASE_PRIVATE_KEY').replace('\\n', '\n'),
+                    "private_key_id": os.getenv('FIREBASE_PRIVATE_KEY_ID', ''),
+                    "client_id": os.getenv('FIREBASE_CLIENT_ID', ''),
+                    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                    "token_uri": "https://oauth2.googleapis.com/token"
+                }
+                cred = credentials.Certificate(service_account_info)
+                logger.info("Firebase initialized with environment variables")
+            
+            # Option 4: Default credentials (for Google Cloud environments)
+            else:
+                cred = credentials.ApplicationDefault()
+                logger.info("Firebase initialized with default credentials")
+            
+            # Initialize the app if not already done
+            if not firebase_admin._apps:
+                initialize_app(cred)
+            
+            self._is_initialized = True
+            
+        except Exception as e:
+            logger.error(f"Failed to initialize Firebase: {e}")
+            raise RuntimeError(f"Firebase initialization failed: {e}")
+    
+    def send_notification(self, 
+                         device_token: str, 
+                         title: str, 
+                         body: str, 
+                         data: Optional[Dict[str, str]] = None,
+                         **options) -> str:
+        """
+        Send push notification to a single device
+        
+        Args:
+            device_token: FCM device token
+            title: Notification title
+            body: Notification body
+            data: Optional custom data dictionary
+            **options: Additional notification options (badge, sound, etc.)
+            
+        Returns:
+            Message ID if successful
+            
+        Raises:
+            ValueError: If device_token is invalid
+            Exception: If sending fails
+        """
+        try:
+            if not device_token or not isinstance(device_token, str):
+                raise ValueError("Device token must be a non-empty string")
+            
+            # Prepare the message
+            message_data = {
+                'token': device_token,
+                'notification': messaging.Notification(
+                    title=title or "{{title}}",
+                    body=body or "{{body}}"
+                ),
+                # iOS specific configuration
+                'apns': messaging.APNSConfig(
+                    headers={
+                        'apns-priority': '10',  # High priority
+                        'apns-push-type': 'alert'
+                    },
+                    payload=messaging.APNSPayload(
+                        aps=messaging.Aps(
+                            alert=messaging.ApsAlert(
+                                title=title or "{{title}}",
+                                body=body or "{{body}}"
+                            ),
+                            badge=options.get('badge', 1),
+                            sound=options.get('sound', 'default'),
+                            content_available=True
+                        )
+                    )
+                ),
+                # Android specific configuration
+                'android': messaging.AndroidConfig(
+                    priority='high',
+                    notification=messaging.AndroidNotification(
+                        title=title or "{{title}}",
+                        body=body or "{{body}}",
+                        icon=options.get('icon', 'ic_notification'),
+                        color=options.get('color', '#FF6B35'),
+                        sound=options.get('sound', 'default'),
+                        channel_id=options.get('channel_id', 'default_channel'),
+                        click_action=options.get('click_action', 'FLUTTER_NOTIFICATION_CLICK')
+                    )
+                )
+            }
+            
+            # Add custom data if provided
+            if data:
+                # FCM requires string values for data
+                message_data['data'] = {k: str(v) for k, v in data.items()}
+            
+            # Add TTL if specified
+            if 'time_to_live' in options:
+                ttl_seconds = options['time_to_live']
+                message_data['android'].ttl = ttl_seconds * 1000  # Convert to milliseconds
+                message_data['apns'].headers['apns-expiration'] = str(int(time.time()) + ttl_seconds)
+            
+            message = messaging.Message(**message_data)
+            response = messaging.send(message)
+            
+            logger.info(f"Successfully sent message to {device_token}. Response: {response}")
+            return response
+            
+        except messaging.FirebaseError as e:
+            logger.error(f"Firebase messaging error when sending to {device_token}: {e}")
+            
+            # Handle specific error codes
+            error_code = getattr(e, 'code', 'unknown')
+            if 'invalid-argument' in error_code:
+                raise ValueError(f"Invalid message parameters: {e}")
+            elif 'registration-token-not-registered' in error_code:
+                raise ValueError(f"Device token is no longer valid: {device_token}")
+            elif 'sender-id-mismatch' in error_code:
+                raise PermissionError("Sender ID mismatch. Check your Firebase configuration.")
+            elif 'quota-exceeded' in error_code:
+                raise RuntimeError("Message quota exceeded. Please try again later.")
+            elif 'authentication-error' in error_code:
+                raise PermissionError("Authentication failed. Check your Firebase credentials.")
+            else:
+                raise RuntimeError(f"Firebase messaging error ({error_code}): {e}")
+                
+        except Exception as e:
+            logger.error(f"Unexpected error when sending notification to {device_token}: {e}")
+            raise
+    
+    def send_notification_to_multiple(self, 
+                                    device_tokens: List[str], 
+                                    title: str, 
+                                    body: str, 
+                                    data: Optional[Dict[str, str]] = None,
+                                    **options) -> Dict:
+        """
+        Send push notification to multiple devices
+        
+        Args:
+            device_tokens: List of FCM device tokens
+            title: Notification title
+            body: Notification body
+            data: Optional custom data dictionary
+            **options: Additional notification options
+            
+        Returns:
+            Dictionary with success/failure details
+            
+        Raises:
+            ValueError: If device_tokens is invalid
+            Exception: If sending fails
+        """
+        try:
+            if not device_tokens or not isinstance(device_tokens, list):
+                raise ValueError("Device tokens must be a non-empty list")
+            
+            valid_tokens = [token for token in device_tokens if token and isinstance(token, str)]
+            if not valid_tokens:
+                raise ValueError("No valid device tokens provided")
+            
+            messages = []
+            for token in valid_tokens:
+                message_data = {
+                    'token': token,
+                    'notification': messaging.Notification(
+                        title=title or "{{title}}",
+                        body=body or "{{body}}"
+                    ),
+                    'apns': messaging.APNSConfig(
+                        headers={
+                            'apns-priority': '10',
+                            'apns-push-type': 'alert'
+                        },
+                        payload=messaging.APNSPayload(
+                            aps=messaging.Aps(
+                                alert=messaging.ApsAlert(
+                                    title=title or "{{title}}",
+                                    body=body or "{{body}}"
+                                ),
+                                badge=options.get('badge', 1),
+                                sound=options.get('sound', 'default')
+                            )
+                        )
+                    ),
+                    'android': messaging.AndroidConfig(
+                        priority='high',
+                        notification=messaging.AndroidNotification(
+                            title=title or "{{title}}",
+                            body=body or "{{body}}",
+                            icon=options.get('icon', 'ic_notification'),
+                            color=options.get('color', '#FF6B35'),
+                            sound=options.get('sound', 'default')
+                        )
+                    )
+                }
+                
+                if data:
+                    message_data['data'] = {k: str(v) for k, v in data.items()}
+                
+                messages.append(messaging.Message(**message_data))
+            
+            response = messaging.send_all(messages)
+            logger.info(f"Sent batch notification. Success: {response.success_count}, Failed: {response.failure_count}")
+            
+            # Log failed tokens
+            for i, resp in enumerate(response.responses):
+                if not resp.success:
+                    logger.warning(f"Failed to send to token {valid_tokens[i]}: {resp.exception}")
+            
+            return {
+                'success_count': response.success_count,
+                'failure_count': response.failure_count,
+                'responses': [
+                    {
+                        'token': valid_tokens[i],
+                        'success': resp.success,
+                        'message_id': resp.message_id if resp.success else None,
+                        'error': str(resp.exception) if not resp.success else None
+                    }
+                    for i, resp in enumerate(response.responses)
+                ]
+            }
+            
+        except Exception as e:
+            logger.error(f"Error sending batch notifications: {e}")
+            raise
+    
+    def send_to_topic(self, 
+                     topic: str, 
+                     title: str, 
+                     body: str, 
+                     data: Optional[Dict[str, str]] = None,
+                     **options) -> str:
+        """
+        Send notification to a topic
+        
+        Args:
+            topic: Firebase topic name
+            title: Notification title
+            body: Notification body
+            data: Optional custom data dictionary
+            **options: Additional notification options
+            
+        Returns:
+            Message ID if successful
+            
+        Raises:
+            ValueError: If topic is invalid
+            Exception: If sending fails
+        """
+        try:
+            if not topic or not isinstance(topic, str):
+                raise ValueError("Topic must be a non-empty string")
+            
+            message_data = {
+                'topic': topic,
+                'notification': messaging.Notification(
+                    title=title or "{{title}}",
+                    body=body or "{{body}}"
+                ),
+                'apns': messaging.APNSConfig(
+                    payload=messaging.APNSPayload(
+                        aps=messaging.Aps(
+                            alert=messaging.ApsAlert(
+                                title=title or "{{title}}",
+                                body=body or "{{body}}"
+                            ),
+                            badge=options.get('badge', 1),
+                            sound=options.get('sound', 'default')
+                        )
+                    )
+                ),
+                'android': messaging.AndroidConfig(
+                    notification=messaging.AndroidNotification(
+                        title=title or "{{title}}",
+                        body=body or "{{body}}",
+                        icon=options.get('icon', 'ic_notification'),
+                        color=options.get('color', '#FF6B35')
+                    )
+                )
+            }
+            
+            if data:
+                message_data['data'] = {k: str(v) for k, v in data.items()}
+            
+            message = messaging.Message(**message_data)
+            response = messaging.send(message)
+            
+            logger.info(f"Successfully sent message to topic {topic}. Response: {response}")
+            return response
+            
+        except Exception as e:
+            logger.error(f"Error sending notification to topic {topic}: {e}")
+            raise
+
+
+def main():
+    """Example usage of the Firebase Notification Service"""
+    try:
+        # Initialize the service
+        notification_service = FirebaseNotificationService()
+        
+        # Example 1: Send to single device
+        device_token = "DEVICE_TOKEN"  # Replace with actual device token
+        message_id = notification_service.send_notification(
+            device_token,
+            "{{title}}",
+            "{{body}}",
+            data={
+                'custom_key': 'custom_value',
+                'action': 'open_screen'
+            },
+            badge=1,
+            sound='notification.wav',
+            icon='custom_icon',
+            color='#0066CC'
+        )
+        print(f"Single notification sent with ID: {message_id}")
+        
+        # Example 2: Send to multiple devices
+        device_tokens = ["TOKEN_1", "TOKEN_2", "TOKEN_3"]
+        batch_response = notification_service.send_notification_to_multiple(
+            device_tokens,
+            "{{title}}",
+            "{{body}}",
+            data={'broadcast': 'true'}
+        )
+        print(f"Batch notification sent. Success: {batch_response['success_count']}, Failed: {batch_response['failure_count']}")
+        
+        # Example 3: Send to topic
+        topic_response = notification_service.send_to_topic(
+            "news",
+            "{{title}}",
+            "{{body}}",
+            data={'category': 'breaking'}
+        )
+        print(f"Topic notification sent with ID: {topic_response}")
+        
+    except Exception as e:
+        logger.error(f"Error: {e}")
+        exit(1)
+
+
+if __name__ == "__main__":
+    main()
+
+
+"""
+SETUP INSTRUCTIONS:
+
+1. Install Dependencies:
+   pip install firebase-admin
+
+2. Firebase Configuration (Choose one option):
+
+   Option A: Service account file path
+   export FIREBASE_SERVICE_ACCOUNT_PATH="/path/to/service-account.json"
+
+   Option B: Service account JSON string
+   export FIREBASE_SERVICE_ACCOUNT_JSON='{"type": "service_account", "project_id": "your-project"...}'
+
+   Option C: Individual environment variables
+   export FIREBASE_PROJECT_ID="your-project-id"
+   export FIREBASE_CLIENT_EMAIL="your-service-account@your-project.iam.gserviceaccount.com"
+   export FIREBASE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
+   export FIREBASE_PRIVATE_KEY_ID="key-id"
+   export FIREBASE_CLIENT_ID="client-id"
+
+   Option D: Default credentials (for Google Cloud environments)
+   No additional configuration needed
+
+3. Usage:
+   from firebase_notification_service import FirebaseNotificationService
+   
+   service = FirebaseNotificationService()
+   message_id = service.send_notification('device-token', 'Title', 'Body')
+
+4. Error Handling:
+   - Invalid tokens raise ValueError with descriptive messages
+   - Network errors raise RuntimeError with details
+   - Authentication errors raise PermissionError
+   - All errors are logged for debugging
+
+5. Features:
+   - Single device notifications
+   - Batch notifications (multiple devices)
+   - Topic-based notifications
+   - iOS and Android specific configurations
+   - Custom data payload support
+   - Comprehensive error handling and logging
+   - Type hints for better IDE support
+
+6. Best Practices:
+   - Always handle exceptions appropriately
+   - Use batch sending for multiple recipients (more efficient)
+   - Implement token refresh logic for invalid tokens
+   - Monitor quota usage and implement rate limiting
+   - Test notifications on both iOS and Android devices
+   - Use logging to monitor notification delivery
+"""

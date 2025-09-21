@@ -1,0 +1,596 @@
+require 'googleauth'
+require 'net/http'
+require 'uri'
+require 'json'
+require 'logger'
+require 'time'
+
+##
+# Firebase Cloud Messaging (FCM) Service for sending push notifications
+class FirebaseNotificationService
+  FIREBASE_URL = 'https://fcm.googleapis.com/v1/projects/%s/messages:send'
+  FIREBASE_SCOPE = 'https://www.googleapis.com/auth/firebase.messaging'
+
+  attr_reader :logger
+
+  def initialize
+    @logger = Logger.new($stdout)
+    @logger.level = Logger::INFO
+    @logger.formatter = proc do |severity, datetime, progname, msg|
+      "[#{datetime.strftime('%Y-%m-%d %H:%M:%S')}] #{severity}: #{msg}\n"
+    end
+    
+    initialize_firebase
+  end
+
+  ##
+  # Initialize Firebase credentials
+  def initialize_firebase
+    @project_id = nil
+    @credentials = nil
+
+    begin
+      # Option 1: Using service account file path
+      service_account_path = ENV['FIREBASE_SERVICE_ACCOUNT_PATH']
+      if service_account_path && File.exist?(service_account_path)
+        @credentials = Google::Auth::ServiceAccountCredentials.make_creds(
+          json_key_io: File.open(service_account_path),
+          scope: FIREBASE_SCOPE
+        )
+        
+        # Extract project ID from service account file
+        service_account_data = JSON.parse(File.read(service_account_path))
+        @project_id = service_account_data['project_id']
+        @logger.info('Firebase initialized with service account file')
+      
+      # Option 2: Using service account JSON string
+      elsif ENV['FIREBASE_SERVICE_ACCOUNT_JSON']
+        service_account_data = JSON.parse(ENV['FIREBASE_SERVICE_ACCOUNT_JSON'])
+        @credentials = Google::Auth::ServiceAccountCredentials.make_creds(
+          json_key_io: StringIO.new(ENV['FIREBASE_SERVICE_ACCOUNT_JSON']),
+          scope: FIREBASE_SCOPE
+        )
+        @project_id = service_account_data['project_id']
+        @logger.info('Firebase initialized with service account JSON')
+      
+      # Option 3: Using individual environment variables
+      elsif ENV['FIREBASE_PROJECT_ID'] && ENV['FIREBASE_CLIENT_EMAIL'] && ENV['FIREBASE_PRIVATE_KEY']
+        service_account_data = {
+          'type' => 'service_account',
+          'project_id' => ENV['FIREBASE_PROJECT_ID'],
+          'client_email' => ENV['FIREBASE_CLIENT_EMAIL'],
+          'private_key' => ENV['FIREBASE_PRIVATE_KEY'].gsub('\\n', "\n"),
+          'private_key_id' => ENV['FIREBASE_PRIVATE_KEY_ID'] || '',
+          'client_id' => ENV['FIREBASE_CLIENT_ID'] || '',
+          'auth_uri' => 'https://accounts.google.com/o/oauth2/auth',
+          'token_uri' => 'https://oauth2.googleapis.com/token'
+        }
+        
+        @credentials = Google::Auth::ServiceAccountCredentials.make_creds(
+          json_key_io: StringIO.new(service_account_data.to_json),
+          scope: FIREBASE_SCOPE
+        )
+        @project_id = ENV['FIREBASE_PROJECT_ID']
+        @logger.info('Firebase initialized with environment variables')
+      
+      # Option 4: Default credentials (for Google Cloud environments)
+      else
+        @credentials = Google::Auth.get_application_default([FIREBASE_SCOPE])
+        # Try to get project ID from metadata service or environment
+        @project_id = ENV['GOOGLE_CLOUD_PROJECT'] || ENV['GCLOUD_PROJECT'] || get_project_id_from_metadata
+        @logger.info('Firebase initialized with default credentials')
+      end
+
+      raise 'Project ID is required but not found' unless @project_id
+
+    rescue => e
+      @logger.error("Failed to initialize Firebase: #{e.message}")
+      raise "Firebase initialization failed: #{e.message}"
+    end
+  end
+
+  ##
+  # Send push notification to a single device
+  #
+  # @param device_token [String] FCM device token
+  # @param title [String] Notification title
+  # @param body [String] Notification body
+  # @param data [Hash, nil] Optional custom data
+  # @param options [Hash] Additional notification options
+  # @return [String] Message ID if successful
+  # @raise [StandardError] if sending fails
+  def send_notification(device_token, title, body, data: nil, **options)
+    raise ArgumentError, 'Device token cannot be nil or empty' if device_token.nil? || device_token.strip.empty?
+
+    title = title.to_s.empty? ? '{{title}}' : title
+    body = body.to_s.empty? ? '{{body}}' : body
+
+    # Set default options
+    options = {
+      badge: 1,
+      sound: 'default',
+      icon: 'ic_notification',
+      color: '#FF6B35',
+      channel_id: 'default_channel',
+      click_action: 'FLUTTER_NOTIFICATION_CLICK',
+      time_to_live: nil
+    }.merge(options)
+
+    begin
+      # Build the message payload
+      message = {
+        token: device_token,
+        notification: {
+          title: title,
+          body: body
+        },
+        # iOS specific configuration
+        apns: {
+          headers: {
+            'apns-priority' => '10', # High priority
+            'apns-push-type' => 'alert'
+          },
+          payload: {
+            aps: {
+              alert: {
+                title: title,
+                body: body
+              },
+              badge: options[:badge],
+              sound: options[:sound],
+              'content-available' => 1
+            }
+          }
+        },
+        # Android specific configuration
+        android: {
+          priority: 'high',
+          notification: {
+            title: title,
+            body: body,
+            icon: options[:icon],
+            color: options[:color],
+            sound: options[:sound],
+            channel_id: options[:channel_id],
+            click_action: options[:click_action]
+          }
+        }
+      }
+
+      # Add custom data if provided
+      if data && data.is_a?(Hash) && !data.empty?
+        # FCM requires string values for data
+        message[:data] = data.transform_values(&:to_s)
+      end
+
+      # Add TTL if specified
+      if options[:time_to_live]
+        message[:android][:ttl] = "#{options[:time_to_live]}s"
+        expiration_time = Time.now.to_i + options[:time_to_live]
+        message[:apns][:headers]['apns-expiration'] = expiration_time.to_s
+      end
+
+      response = send_fcm_request({ message: message })
+      message_id = JSON.parse(response.body)['name']
+
+      @logger.info("Successfully sent message to #{device_token}. Response: #{message_id}")
+      message_id
+
+    rescue => e
+      @logger.error("Error sending notification to #{device_token}: #{e.message}")
+      handle_fcm_error(e, device_token)
+    end
+  end
+
+  ##
+  # Send push notification to multiple devices
+  #
+  # @param device_tokens [Array<String>] Array of FCM device tokens
+  # @param title [String] Notification title
+  # @param body [String] Notification body
+  # @param data [Hash, nil] Optional custom data
+  # @param options [Hash] Additional notification options
+  # @return [Hash] Batch response with success/failure details
+  # @raise [StandardError] if sending fails
+  def send_notification_to_multiple(device_tokens, title, body, data: nil, **options)
+    raise ArgumentError, 'Device tokens array cannot be nil or empty' if device_tokens.nil? || device_tokens.empty?
+
+    # Filter out empty tokens
+    valid_tokens = device_tokens.select { |token| token && !token.strip.empty? }
+    raise ArgumentError, 'No valid device tokens provided' if valid_tokens.empty?
+
+    title = title.to_s.empty? ? '{{title}}' : title
+    body = body.to_s.empty? ? '{{body}}' : body
+
+    # Set default options
+    options = {
+      badge: 1,
+      sound: 'default',
+      icon: 'ic_notification',
+      color: '#FF6B35'
+    }.merge(options)
+
+    begin
+      responses = []
+      success_count = 0
+      failure_count = 0
+
+      # Send to each token individually (FCM v1 doesn't support batch in single request)
+      valid_tokens.each do |token|
+        begin
+          message_id = send_notification(token, title, body, data: data, **options)
+          responses << {
+            token: token,
+            success: true,
+            message_id: message_id,
+            error: nil
+          }
+          success_count += 1
+        rescue => e
+          responses << {
+            token: token,
+            success: false,
+            message_id: nil,
+            error: e.message
+          }
+          failure_count += 1
+          @logger.warn("Failed to send to token #{token}: #{e.message}")
+        end
+      end
+
+      @logger.info("Sent batch notification. Success: #{success_count}, Failed: #{failure_count}")
+
+      {
+        success_count: success_count,
+        failure_count: failure_count,
+        responses: responses
+      }
+
+    rescue => e
+      @logger.error("Error sending batch notifications: #{e.message}")
+      raise e
+    end
+  end
+
+  ##
+  # Send notification to a Firebase topic
+  #
+  # @param topic [String] Firebase topic name
+  # @param title [String] Notification title
+  # @param body [String] Notification body
+  # @param data [Hash, nil] Optional custom data
+  # @param options [Hash] Additional notification options
+  # @return [String] Message ID if successful
+  # @raise [StandardError] if sending fails
+  def send_to_topic(topic, title, body, data: nil, **options)
+    raise ArgumentError, 'Topic cannot be nil or empty' if topic.nil? || topic.strip.empty?
+
+    title = title.to_s.empty? ? '{{title}}' : title
+    body = body.to_s.empty? ? '{{body}}' : body
+
+    # Set default options
+    options = {
+      badge: 1,
+      sound: 'default',
+      icon: 'ic_notification',
+      color: '#FF6B35'
+    }.merge(options)
+
+    begin
+      # Build the message payload
+      message = {
+        topic: topic,
+        notification: {
+          title: title,
+          body: body
+        },
+        apns: {
+          payload: {
+            aps: {
+              alert: {
+                title: title,
+                body: body
+              },
+              badge: options[:badge],
+              sound: options[:sound]
+            }
+          }
+        },
+        android: {
+          notification: {
+            title: title,
+            body: body,
+            icon: options[:icon],
+            color: options[:color]
+          }
+        }
+      }
+
+      # Add custom data if provided
+      if data && data.is_a?(Hash) && !data.empty?
+        message[:data] = data.transform_values(&:to_s)
+      end
+
+      response = send_fcm_request({ message: message })
+      message_id = JSON.parse(response.body)['name']
+
+      @logger.info("Successfully sent message to topic #{topic}. Response: #{message_id}")
+      message_id
+
+    rescue => e
+      @logger.error("Error sending notification to topic #{topic}: #{e.message}")
+      raise e
+    end
+  end
+
+  ##
+  # Subscribe tokens to a topic
+  #
+  # @param tokens [Array<String>] Device tokens to subscribe
+  # @param topic [String] Topic name
+  # @return [Hash] Subscription results
+  def subscribe_to_topic(tokens, topic)
+    manage_topic_subscription(tokens, topic, :subscribe)
+  end
+
+  ##
+  # Unsubscribe tokens from a topic
+  #
+  # @param tokens [Array<String>] Device tokens to unsubscribe
+  # @param topic [String] Topic name
+  # @return [Hash] Unsubscription results
+  def unsubscribe_from_topic(tokens, topic)
+    manage_topic_subscription(tokens, topic, :unsubscribe)
+  end
+
+  private
+
+  ##
+  # Send HTTP request to FCM API
+  def send_fcm_request(payload)
+    access_token = @credentials.fetch_access_token!['access_token']
+    
+    uri = URI(FIREBASE_URL % @project_id)
+    http = Net::HTTP.new(uri.host, uri.port)
+    http.use_ssl = true
+
+    request = Net::HTTP::Post.new(uri)
+    request['Authorization'] = "Bearer #{access_token}"
+    request['Content-Type'] = 'application/json'
+    request.body = payload.to_json
+
+    response = http.request(request)
+
+    unless response.is_a?(Net::HTTPSuccess)
+      error_data = JSON.parse(response.body) rescue { 'error' => 'Unknown error' }
+      raise "FCM API error (#{response.code}): #{error_data['error']['message'] rescue error_data['error']}"
+    end
+
+    response
+  end
+
+  ##
+  # Handle FCM-specific errors
+  def handle_fcm_error(error, device_token = nil)
+    case error.message
+    when /400/
+      raise ArgumentError, "Invalid message parameters: #{error.message}"
+    when /404/
+      raise ArgumentError, "Device token is no longer valid: #{device_token}"
+    when /403/
+      raise StandardError, "Authentication failed or sender ID mismatch. Check your Firebase configuration."
+    when /429/
+      raise StandardError, "Message quota exceeded. Please try again later."
+    when /503/
+      raise StandardError, "FCM service is temporarily unavailable."
+    else
+      raise StandardError, "Firebase messaging error: #{error.message}"
+    end
+  end
+
+  ##
+  # Get project ID from metadata service (for Google Cloud environments)
+  def get_project_id_from_metadata
+    uri = URI('http://metadata.google.internal/computeMetadata/v1/project/project-id')
+    http = Net::HTTP.new(uri.host, uri.port)
+    request = Net::HTTP::Get.new(uri)
+    request['Metadata-Flavor'] = 'Google'
+    
+    response = http.request(request)
+    response.is_a?(Net::HTTPSuccess) ? response.body.strip : nil
+  rescue
+    nil
+  end
+
+  ##
+  # Manage topic subscriptions (subscribe/unsubscribe)
+  def manage_topic_subscription(tokens, topic, action)
+    raise ArgumentError, 'Tokens array cannot be nil or empty' if tokens.nil? || tokens.empty?
+    raise ArgumentError, 'Topic cannot be nil or empty' if topic.nil? || topic.strip.empty?
+
+    valid_tokens = tokens.select { |token| token && !token.strip.empty? }
+    raise ArgumentError, 'No valid device tokens provided' if valid_tokens.empty?
+
+    begin
+      access_token = @credentials.fetch_access_token!['access_token']
+      
+      url = case action
+            when :subscribe
+              "https://iid.googleapis.com/iid/v1:batchAdd"
+            when :unsubscribe
+              "https://iid.googleapis.com/iid/v1:batchRemove"
+            else
+              raise ArgumentError, "Invalid action: #{action}"
+            end
+
+      uri = URI(url)
+      http = Net::HTTP.new(uri.host, uri.port)
+      http.use_ssl = true
+
+      request = Net::HTTP::Post.new(uri)
+      request['Authorization'] = "Bearer #{access_token}"
+      request['Content-Type'] = 'application/json'
+      request.body = {
+        to: "/topics/#{topic}",
+        registration_tokens: valid_tokens
+      }.to_json
+
+      response = http.request(request)
+
+      if response.is_a?(Net::HTTPSuccess)
+        result = JSON.parse(response.body)
+        success_count = valid_tokens.length - (result['results']&.count { |r| r['error'] } || 0)
+        failure_count = result['results']&.count { |r| r['error'] } || 0
+
+        @logger.info("#{action.capitalize}d tokens to/from topic #{topic}. Success: #{success_count}, Failed: #{failure_count}")
+
+        {
+          success_count: success_count,
+          failure_count: failure_count
+        }
+      else
+        error_data = JSON.parse(response.body) rescue { 'error' => 'Unknown error' }
+        raise "Topic #{action} error (#{response.code}): #{error_data['error']}"
+      end
+
+    rescue => e
+      @logger.error("Error #{action}ing to/from topic #{topic}: #{e.message}")
+      raise e
+    end
+  end
+end
+
+##
+# Example usage of the Firebase Notification Service
+def main
+  begin
+    # Initialize the service
+    notification_service = FirebaseNotificationService.new
+
+    # Example 1: Send to single device
+    device_token = "DEVICE_TOKEN" # Replace with actual device token
+    data = {
+      'custom_key' => 'custom_value',
+      'action' => 'open_screen'
+    }
+    options = {
+      badge: 1,
+      sound: 'notification.wav',
+      icon: 'custom_icon',
+      color: '#0066CC'
+    }
+
+    message_id = notification_service.send_notification(
+      device_token,
+      '{{title}}',
+      '{{body}}',
+      data: data,
+      **options
+    )
+    puts "Single notification sent with ID: #{message_id}"
+
+    # Example 2: Send to multiple devices
+    device_tokens = ["TOKEN_1", "TOKEN_2", "TOKEN_3"]
+    batch_data = { 'broadcast' => 'true' }
+
+    batch_response = notification_service.send_notification_to_multiple(
+      device_tokens,
+      '{{title}}',
+      '{{body}}',
+      data: batch_data
+    )
+    puts "Batch notification sent. Success: #{batch_response[:success_count]}, Failed: #{batch_response[:failure_count]}"
+
+    # Example 3: Send to topic
+    topic_data = { 'category' => 'breaking' }
+
+    topic_response = notification_service.send_to_topic(
+      'news',
+      '{{title}}',
+      '{{body}}',
+      data: topic_data
+    )
+    puts "Topic notification sent with ID: #{topic_response}"
+
+    # Example 4: Subscribe to topic
+    subscription_result = notification_service.subscribe_to_topic(
+      ["TOKEN_1", "TOKEN_2"],
+      "news"
+    )
+    puts "Topic subscription. Success: #{subscription_result[:success_count]}, Failed: #{subscription_result[:failure_count]}"
+
+  rescue => e
+    puts "Error: #{e.message}"
+    exit(1)
+  end
+end
+
+# Run if this file is executed directly
+main if __FILE__ == $0
+
+=begin
+SETUP INSTRUCTIONS:
+
+1. Install Dependencies (Gemfile):
+   gem 'googleauth'
+   gem 'net-http'
+   
+   Or install directly:
+   gem install googleauth
+
+2. Firebase Configuration (Choose one option):
+
+   Option A: Service account file path
+   ENV['FIREBASE_SERVICE_ACCOUNT_PATH'] = '/path/to/service-account.json'
+
+   Option B: Service account JSON string
+   ENV['FIREBASE_SERVICE_ACCOUNT_JSON'] = '{"type": "service_account", "project_id": "your-project"...}'
+
+   Option C: Individual environment variables
+   ENV['FIREBASE_PROJECT_ID'] = 'your-project-id'
+   ENV['FIREBASE_CLIENT_EMAIL'] = 'your-service-account@your-project.iam.gserviceaccount.com'
+   ENV['FIREBASE_PRIVATE_KEY'] = "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
+
+   Option D: Default credentials (for Google Cloud environments)
+   ENV['GOOGLE_CLOUD_PROJECT'] = 'your-project-id'
+
+3. Usage:
+   service = FirebaseNotificationService.new
+   message_id = service.send_notification('device-token', 'Title', 'Body')
+
+4. Error Handling:
+   - ArgumentError for invalid parameters
+   - StandardError for service and authentication issues
+   - All errors are logged with appropriate levels
+   - Specific error codes are handled and translated to meaningful messages
+
+5. Features:
+   - Single device notifications with comprehensive configuration
+   - Batch notifications (multiple devices) with detailed responses
+   - Topic-based notifications
+   - Topic subscription/unsubscription management
+   - iOS and Android specific configurations
+   - Custom data payload support
+   - TTL (Time To Live) support
+   - Comprehensive error handling and logging
+   - Ruby idioms and conventions (snake_case, symbols, etc.)
+
+6. Ruby-Specific Features:
+   - Keyword arguments for better readability
+   - Hash symbol keys for options
+   - String interpolation and Ruby string methods
+   - Proper Ruby error handling with rescue
+   - Logger with custom formatter
+   - Transform methods for data conversion
+   - Ruby-style method naming conventions
+
+7. Best Practices:
+   - Always handle exceptions appropriately
+   - Use batch sending for multiple recipients (more efficient)
+   - Implement token refresh logic for invalid tokens
+   - Monitor quota usage and implement rate limiting
+   - Test notifications on both iOS and Android devices
+   - Use structured logging for better observability
+   - Set appropriate TTL values for time-sensitive notifications
+   - Follow Ruby style guide and conventions
+=end

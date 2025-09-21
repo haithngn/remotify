@@ -1,0 +1,103 @@
+import UserNotifications
+
+// MARK: - Permission Setup (Call once in AppDelegate or initial setup)
+func requestNotificationPermission() {
+    UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { granted, error in
+        if granted {
+            print("Notification permission granted")
+        } else if let error = error {
+            print("Permission error: \(error.localizedDescription)")
+        }
+    }
+}
+
+// MARK: - Local Notification Creation
+func scheduleLocalNotification() {
+    let content = UNMutableNotificationContent()
+    content.title = "{{title}}"
+    content.body = "{{body}}"
+    content.subtitle = "Push Notification" // Optional subtitle
+    content.sound = UNNotificationSound.default
+    content.badge = NSNumber(value: 1)
+    content.categoryIdentifier = "GENERAL_CATEGORY" // For notification actions
+    content.threadIdentifier = "notification_thread" // Groups related notifications
+    
+    // Custom data that matches APNS payload structure
+    content.userInfo = [
+        "aps": [
+            "alert": [
+                "title": "{{title}}",
+                "body": "{{body}}"
+            ],
+            "sound": "default",
+            "badge": 1
+        ],
+        "custom_data": [
+            "type": "local_notification",
+            "timestamp": Date().timeIntervalSince1970
+        ]
+    ]
+    
+    // Immediate delivery (1 second delay)
+    let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 1, repeats: false)
+    
+    // Alternative triggers for scheduled notifications:
+    // let dateComponents = DateComponents(hour: 14, minute: 30)
+    // let trigger = UNCalendarNotificationTrigger(dateMatching: dateComponents, repeats: true)
+    
+    let request = UNNotificationRequest(
+        identifier: UUID().uuidString, // Unique identifier for each notification
+        content: content,
+        trigger: trigger
+    )
+    
+    UNUserNotificationCenter.current().add(request) { error in
+        if let error = error {
+            print("Error scheduling notification: \(error.localizedDescription)")
+        } else {
+            print("Local notification scheduled successfully")
+            print("Title: {{title}}")
+            print("Body: {{body}}")
+        }
+    }
+}
+
+// MARK: - Notification Delegate (Optional - for handling notification interactions)
+extension AppDelegate: UNUserNotificationCenterDelegate {
+    // Handle notification when app is in foreground
+    func userNotificationCenter(_ center: UNUserNotificationCenter, 
+                              willPresent notification: UNNotification, 
+                              withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+        // Show notification even when app is in foreground
+        completionHandler([.alert, .sound, .badge])
+    }
+    
+    // Handle notification tap
+    func userNotificationCenter(_ center: UNUserNotificationCenter, 
+                              didReceive response: UNNotificationResponse, 
+                              withCompletionHandler completionHandler: @escaping () -> Void) {
+        let userInfo = response.notification.request.content.userInfo
+        
+        // Access custom data
+        if let customData = userInfo["custom_data"] as? [String: Any] {
+            print("Custom data received: \(customData)")
+        }
+        
+        // Handle the notification response
+        print("Notification tapped - Title: {{title}}, Body: {{body}}")
+        
+        completionHandler()
+    }
+}
+
+// MARK: - Usage Instructions
+// 1. In AppDelegate didFinishLaunchingWithOptions, add:
+//    UNUserNotificationCenter.current().delegate = self
+//    requestNotificationPermission()
+//
+// 2. To schedule a notification:
+//    scheduleLocalNotification()
+//
+// 3. This creates LOCAL notifications that mirror APNS payload structure
+// 4. For actual PUSH notifications, implement remote notification registration
+//    and handle incoming payloads in application(_:didReceiveRemoteNotification:)

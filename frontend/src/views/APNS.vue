@@ -7,6 +7,7 @@ import { notify } from "../components/notification";
 import 'vanilla-jsoneditor/themes/jse-theme-dark.css'
 import * as rt from "../../wailsjs/runtime";
 import {values} from "../../wailsjs/go/models";
+import GenerateCode from './GenerateCode.vue';
 
 const deviceToken = ref('')
 const apnsID = ref('')
@@ -21,6 +22,9 @@ const invalidate = ref(true)
 const isSending = ref(false)
 const jsonEditorHeight = ref("435px")
 const json_editor_theme = ref('jse-theme-light')
+
+// Code Generation Section
+const codeGenerationEnabled = ref(false)
 
 // Token Dropdown
 const tokenDropdownComponentKey = ref(0);
@@ -95,6 +99,8 @@ onMounted(() => {
     if (settings.data.theme_mode !== undefined) {
       json_editor_theme.value = settings.data.theme_mode === 'dark' ? 'jse-theme-dark' : 'jse-theme-light'
     }
+    // Load code generation setting
+    codeGenerationEnabled.value = settings.data.code_generation_enabled || false
   })
 
   //Listen Window resize event
@@ -271,6 +277,10 @@ rt.EventsOn('onChangeLightMode', (event) => {
   json_editor_theme.value = 'jse-theme-light'
 });
 
+rt.EventsOn('onCodeGenerationSettingChanged', (event) => {
+  codeGenerationEnabled.value = event.enabled
+});
+
 //Cre: https://stackoverflow.com/a/2117523
 function uuidv4() {
   return "10000000-1000-4000-8000-100000000000".replace(/[018]/g, c =>
@@ -371,6 +381,16 @@ function uuidv4() {
         </div>
       </div>
     </form>
+
+    <!-- Code Generation Section (conditional) -->
+    <div v-if="codeGenerationEnabled" class="mt-4">
+      <hr class="my-4">
+      <div class="d-flex align-items-center mb-3">
+        <i class="bi bi-code-slash text-info me-2"></i>
+        <h5 class="mb-0">Code Generation</h5>
+      </div>
+      <GenerateCode :apns-payload="payload" />
+    </div>
   </div>
 </template>
 

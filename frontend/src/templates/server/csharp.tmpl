@@ -1,0 +1,347 @@
+using FirebaseAdmin;
+using FirebaseAdmin.Messaging;
+using Google.Apis.Auth.OAuth2;
+using System;
+using System.Threading.Tasks;
+using Microsoft.Extensions.Logging;
+using System.IO;
+using System.Collections.Generic;
+using System.Linq;
+
+namespace PushNotificationService
+{
+    /// <summary>
+    /// Firebase Cloud Messaging (FCM) Service for sending push notifications
+    /// </summary>
+    public class FirebaseNotificationService
+    {
+        private readonly ILogger<FirebaseNotificationService> _logger;
+        private static bool _isInitialized = false;
+
+        public FirebaseNotificationService(ILogger<FirebaseNotificationService> logger = null)
+        {
+            _logger = logger ?? CreateDefaultLogger();
+            InitializeFirebase();
+        }
+
+        /// <summary>
+        /// Initialize Firebase Admin SDK
+        /// </summary>
+        private void InitializeFirebase()
+        {
+            if (_isInitialized) return;
+
+            try
+            {
+                // Option 1: Using service account file
+                var serviceAccountPath = Environment.GetEnvironmentVariable("FIREBASE_SERVICE_ACCOUNT_PATH");
+                
+                if (!string.IsNullOrEmpty(serviceAccountPath) && File.Exists(serviceAccountPath))
+                {
+                    FirebaseApp.Create(new AppOptions()
+                    {
+                        Credential = GoogleCredential.FromFile(serviceAccountPath)
+                    });
+                    _logger?.LogInformation("Firebase initialized with service account file");
+                }
+                // Option 2: Using service account JSON string
+                else
+                {
+                    var serviceAccountJson = Environment.GetEnvironmentVariable("FIREBASE_SERVICE_ACCOUNT_JSON");
+                    if (!string.IsNullOrEmpty(serviceAccountJson))
+                    {
+                        FirebaseApp.Create(new AppOptions()
+                        {
+                            Credential = GoogleCredential.FromJson(serviceAccountJson)
+                        });
+                        _logger?.LogInformation("Firebase initialized with service account JSON");
+                    }
+                    else
+                    {
+                        // Option 3: Default credentials (for Google Cloud environments)
+                        FirebaseApp.Create(new AppOptions()
+                        {
+                            Credential = GoogleCredential.GetApplicationDefault()
+                        });
+                        _logger?.LogInformation("Firebase initialized with default credentials");
+                    }
+                }
+
+                _isInitialized = true;
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogError(ex, "Failed to initialize Firebase");
+                throw new InvalidOperationException("Firebase initialization failed. Please check your credentials.", ex);
+            }
+        }
+
+        /// <summary>
+        /// Send push notification to a single device
+        /// </summary>
+        /// <param name="deviceToken">FCM device token</param>
+        /// <param name="title">Notification title</param>
+        /// <param name="body">Notification body</param>
+        /// <param name="data">Optional custom data</param>
+        /// <returns>Message ID if successful</returns>
+        public async Task<string> SendNotificationAsync(string deviceToken, string title, string body, Dictionary<string, string> data = null)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(deviceToken))
+                    throw new ArgumentException("Device token cannot be null or empty", nameof(deviceToken));
+
+                var messageBuilder = new Message()
+                {
+                    Token = deviceToken,
+                    Notification = new Notification()
+                    {
+                        Title = title ?? "{{title}}",
+                        Body = body ?? "{{body}}"
+                    },
+                    // iOS specific configuration
+                    Apns = new ApnsConfig()
+                    {
+                        Headers = new Dictionary<string, string>
+                        {
+                            ["apns-priority"] = "10", // High priority
+                            ["apns-push-type"] = "alert"
+                        },
+                        Payload = new ApnsPayload()
+                        {
+                            Aps = new Aps()
+                            {
+                                Alert = new ApsAlert()
+                                {
+                                    Title = title ?? "{{title}}",
+                                    Body = body ?? "{{body}}"
+                                },
+                                Badge = 1,
+                                Sound = "default",
+                                ContentAvailable = true
+                            }
+                        }
+                    },
+                    // Android specific configuration
+                    Android = new AndroidConfig()
+                    {
+                        Priority = Priority.High,
+                        Notification = new AndroidNotification()
+                        {
+                            Title = title ?? "{{title}}",
+                            Body = body ?? "{{body}}",
+                            Icon = "ic_notification",
+                            Color = "#FF6B35",
+                            Sound = "default",
+                            ChannelId = "default_channel"
+                        }
+                    }
+                };
+
+                // Add custom data if provided
+                if (data != null && data.Any())
+                {
+                    messageBuilder.Data = data;
+                }
+
+                var response = await FirebaseMessaging.DefaultInstance.SendAsync(messageBuilder);
+                _logger?.LogInformation($"Successfully sent message to {deviceToken}. Response: {response}");
+                
+                return response;
+            }
+            catch (FirebaseMessagingException ex)
+            {
+                _logger?.LogError(ex, $"Firebase messaging error when sending to {deviceToken}: {ex.Message}");
+                
+                // Handle specific error codes
+                switch (ex.ErrorCode)
+                {
+                    case MessagingErrorCode.InvalidArgument:
+                        throw new ArgumentException($"Invalid message parameters: {ex.Message}", ex);
+                    case MessagingErrorCode.Unregistered:
+                        throw new InvalidOperationException($"Device token is no longer valid: {deviceToken}", ex);
+                    case MessagingErrorCode.SenderIdMismatch:
+                        throw new UnauthorizedAccessException("Sender ID mismatch. Check your Firebase configuration.", ex);
+                    case MessagingErrorCode.QuotaExceeded:
+                        throw new InvalidOperationException("Message quota exceeded. Please try again later.", ex);
+                    default:
+                        throw new Exception($"Firebase messaging error: {ex.Message}", ex);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogError(ex, $"Unexpected error when sending notification to {deviceToken}");
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// Send push notification to multiple devices
+        /// </summary>
+        /// <param name="deviceTokens">List of FCM device tokens</param>
+        /// <param name="title">Notification title</param>
+        /// <param name="body">Notification body</param>
+        /// <param name="data">Optional custom data</param>
+        /// <returns>Batch response with success/failure details</returns>
+        public async Task<BatchResponse> SendNotificationToMultipleAsync(IEnumerable<string> deviceTokens, string title, string body, Dictionary<string, string> data = null)
+        {
+            try
+            {
+                var tokens = deviceTokens?.Where(t => !string.IsNullOrWhiteSpace(t)).ToList();
+                if (tokens == null || !tokens.Any())
+                    throw new ArgumentException("Device tokens list cannot be null or empty", nameof(deviceTokens));
+
+                var messages = tokens.Select(token => new Message()
+                {
+                    Token = token,
+                    Notification = new Notification()
+                    {
+                        Title = title ?? "{{title}}",
+                        Body = body ?? "{{body}}"
+                    },
+                    Apns = new ApnsConfig()
+                    {
+                        Headers = new Dictionary<string, string>
+                        {
+                            ["apns-priority"] = "10",
+                            ["apns-push-type"] = "alert"
+                        },
+                        Payload = new ApnsPayload()
+                        {
+                            Aps = new Aps()
+                            {
+                                Alert = new ApsAlert()
+                                {
+                                    Title = title ?? "{{title}}",
+                                    Body = body ?? "{{body}}"
+                                },
+                                Badge = 1,
+                                Sound = "default"
+                            }
+                        }
+                    },
+                    Android = new AndroidConfig()
+                    {
+                        Priority = Priority.High,
+                        Notification = new AndroidNotification()
+                        {
+                            Title = title ?? "{{title}}",
+                            Body = body ?? "{{body}}",
+                            Icon = "ic_notification",
+                            Color = "#FF6B35",
+                            Sound = "default"
+                        }
+                    },
+                    Data = data
+                }).ToList();
+
+                var response = await FirebaseMessaging.DefaultInstance.SendAllAsync(messages);
+                _logger?.LogInformation($"Sent batch notification. Success: {response.SuccessCount}, Failure: {response.FailureCount}");
+                
+                // Log failed tokens
+                for (int i = 0; i < response.Responses.Count; i++)
+                {
+                    if (!response.Responses[i].IsSuccess)
+                    {
+                        _logger?.LogWarning($"Failed to send to token {tokens[i]}: {response.Responses[i].Exception?.Message}");
+                    }
+                }
+
+                return response;
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogError(ex, "Error sending batch notifications");
+                throw;
+            }
+        }
+
+        private static ILogger<FirebaseNotificationService> CreateDefaultLogger()
+        {
+            using var loggerFactory = LoggerFactory.Create(builder => builder.AddConsole());
+            return loggerFactory.CreateLogger<FirebaseNotificationService>();
+        }
+    }
+
+    /// <summary>
+    /// Example usage of the Firebase Notification Service
+    /// </summary>
+    public class Program
+    {
+        public static async Task Main(string[] args)
+        {
+            try
+            {
+                // Setup logging
+                using var loggerFactory = LoggerFactory.Create(builder => 
+                    builder.AddConsole().SetMinimumLevel(LogLevel.Information));
+                var logger = loggerFactory.CreateLogger<FirebaseNotificationService>();
+
+                // Initialize the service
+                var notificationService = new FirebaseNotificationService(logger);
+
+                // Example 1: Send to single device
+                var deviceToken = "DEVICE_TOKEN"; // Replace with actual device token
+                var messageId = await notificationService.SendNotificationAsync(
+                    deviceToken, 
+                    "{{title}}", 
+                    "{{body}}",
+                    new Dictionary<string, string> 
+                    { 
+                        ["custom_key"] = "custom_value",
+                        ["action"] = "open_screen"
+                    }
+                );
+                Console.WriteLine($"Single notification sent with ID: {messageId}");
+
+                // Example 2: Send to multiple devices
+                var deviceTokens = new[] { "TOKEN_1", "TOKEN_2", "TOKEN_3" };
+                var batchResponse = await notificationService.SendNotificationToMultipleAsync(
+                    deviceTokens, 
+                    "{{title}}", 
+                    "{{body}}"
+                );
+                Console.WriteLine($"Batch notification sent. Success: {batchResponse.SuccessCount}, Failed: {batchResponse.FailureCount}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error: {ex.Message}");
+                Environment.Exit(1);
+            }
+        }
+    }
+}
+
+/*
+SETUP INSTRUCTIONS:
+
+1. Install NuGet Packages:
+   Install-Package FirebaseAdmin
+   Install-Package Microsoft.Extensions.Logging
+   Install-Package Microsoft.Extensions.Logging.Console
+
+2. Firebase Configuration:
+   Option A: Set environment variable with service account file path:
+   $env:FIREBASE_SERVICE_ACCOUNT_PATH = "C:\path\to\service-account.json"
+   
+   Option B: Set environment variable with service account JSON string:
+   $env:FIREBASE_SERVICE_ACCOUNT_JSON = '{"type": "service_account", "project_id": "your-project"...}'
+   
+   Option C: Use default credentials (for Google Cloud environments)
+
+3. Usage:
+   - Replace "DEVICE_TOKEN" with actual FCM device tokens
+   - Customize notification content, data, and configurations as needed
+   - Handle the response and errors appropriately in your application
+
+4. Error Handling:
+   - Invalid tokens will throw specific exceptions
+   - Network errors are automatically retried by the SDK
+   - Quota exceeded errors should be handled with exponential backoff
+
+5. Best Practices:
+   - Use batch sending for multiple recipients
+   - Implement proper logging and monitoring
+   - Handle token refresh and invalid tokens
+   - Test with both iOS and Android devices
+*/

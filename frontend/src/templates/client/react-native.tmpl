@@ -1,0 +1,226 @@
+import PushNotification, { Importance } from 'react-native-push-notification';
+import { Platform, PermissionsAndroid } from 'react-native';
+
+class NotificationService {
+  constructor() {
+    this.configure();
+    this.createDefaultChannel();
+  }
+
+  // Configure push notifications
+  configure = () => {
+    PushNotification.configure({
+      // Called when token is generated (iOS and Android)
+      onRegister: function (token) {
+        console.log('TOKEN:', token);
+      },
+
+      // Called when a remote notification is received while app is in foreground
+      onNotification: function (notification) {
+        console.log('NOTIFICATION:', notification);
+        console.log('Title: {{title}}, Body: {{body}}');
+        
+        // Handle notification tap
+        if (notification.userInteraction) {
+          console.log('Notification was tapped by user');
+          // Navigate to specific screen or perform action
+          // navigation.navigate('NotificationScreen', { data: notification.data });
+        }
+
+        // Required on iOS only (see fetchCompletionHandler docs)
+        notification.finish(PushNotificationIOS.FetchResult.NoData);
+      },
+
+      // Called when a remote notification is received while app is in background
+      onAction: function (notification) {
+        console.log('ACTION:', notification.action);
+        console.log('NOTIFICATION:', notification);
+      },
+
+      // Called when the user fails to register for remote notifications
+      onRegistrationError: function(err) {
+        console.error(err.message, err);
+      },
+
+      // IOS ONLY: Called when a remote notification is received while app is closed
+      onRemoteNotificationsRegistered: function(token) {
+        console.log('Remote notifications registered:', token);
+      },
+
+      // iOS and Android properties
+      senderID: "YOUR_SENDER_ID", // Replace with your FCM Sender ID
+      popInitialNotification: true,
+      requestPermissions: Platform.OS === 'ios',
+    });
+  };
+
+  // Create default notification channel (Android 8.0+)
+  createDefaultChannel = () => {
+    PushNotification.createChannel(
+      {
+        channelId: "default-channel-id",
+        channelName: "Default Channel",
+        channelDescription: "A default channel for notifications",
+        playSound: true,
+        soundName: "default",
+        importance: Importance.HIGH,
+        vibrate: true,
+      },
+      (created) => console.log(`createChannel returned '${created}'`)
+    );
+  };
+
+  // Request permissions (Android 13+)
+  requestPermissions = async () => {
+    if (Platform.OS === 'android') {
+      try {
+        const granted = await PermissionsAndroid.request(
+          PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS
+        );
+        if (granted === PermissionsAndroid.RESULTS.GRANTED) {
+          console.log('Notification permission granted');
+          return true;
+        } else {
+          console.log('Notification permission denied');
+          return false;
+        }
+      } catch (err) {
+        console.warn(err);
+        return false;
+      }
+    }
+    return true; // iOS permissions are requested in configure()
+  };
+
+  // Show local notification
+  showNotification = () => {
+    PushNotification.localNotification({
+      // Android properties
+      channelId: "default-channel-id",
+      title: "{{title}}",
+      message: "{{body}}",
+      subText: "Push Notification", // Android subtitle
+      bigText: "{{body}}", // Expandable text on Android
+      largeIcon: "ic_launcher", // Android large icon
+      smallIcon: "ic_notification", // Android small icon
+      bigPictureUrl: undefined, // URL for big picture style
+      color: "#FF0000", // Android notification color
+      vibrate: true,
+      vibration: 300,
+      playSound: true,
+      soundName: 'default',
+      importance: Importance.HIGH,
+      priority: "high",
+      visibility: "public",
+      
+      // iOS properties
+      alertAction: "view", // iOS alert button text
+      category: "GENERAL_CATEGORY", // iOS notification category
+      userInfo: {
+        title: "{{title}}",
+        body: "{{body}}",
+        custom_data: "local_notification",
+        timestamp: Date.now()
+      },
+      
+      // Cross-platform properties
+      id: Math.floor(Math.random() * 1000000), // Unique notification ID
+      autoCancel: true, // Remove notification when tapped
+      ongoing: false, // Set to true for persistent notifications
+      
+      // Actions (optional)
+      actions: ['Yes', 'No'],
+      invokeApp: true, // Open app when notification is tapped
+      
+      // Scheduling (optional)
+      date: new Date(Date.now() + 1000), // Show after 1 second
+      allowWhileIdle: true, // Android: allow notification while in doze mode
+    });
+
+    console.log('Local notification scheduled successfully');
+    console.log('Title: {{title}}');
+    console.log('Body: {{body}}');
+  };
+
+  // Schedule notification for later
+  scheduleNotification = (date) => {
+    PushNotification.localNotificationSchedule({
+      channelId: "default-channel-id",
+      title: "{{title}}",
+      message: "{{body}}",
+      date: date,
+      allowWhileIdle: true,
+      playSound: true,
+      soundName: 'default',
+    });
+  };
+
+  // Cancel specific notification
+  cancelNotification = (id) => {
+    PushNotification.cancelLocalNotifications({ id: id.toString() });
+  };
+
+  // Cancel all notifications
+  cancelAllNotifications = () => {
+    PushNotification.cancelAllLocalNotifications();
+  };
+
+  // Get scheduled notifications
+  getScheduledNotifications = (callback) => {
+    PushNotification.getScheduledLocalNotifications(callback);
+  };
+
+  // Clear app badge (iOS)
+  clearBadge = () => {
+    PushNotification.setApplicationIconBadgeNumber(0);
+  };
+}
+
+// Export singleton instance
+const notificationService = new NotificationService();
+export default notificationService;
+
+/* Usage in your React Native component:
+
+import notificationService from './NotificationService';
+
+// In your component
+const handleShowNotification = async () => {
+  // Request permissions first (Android 13+)
+  const hasPermission = await notificationService.requestPermissions();
+  
+  if (hasPermission) {
+    notificationService.showNotification();
+  } else {
+    console.log('Notification permission denied');
+  }
+};
+
+// Schedule notification for 10 seconds later
+const handleScheduleNotification = () => {
+  const scheduleDate = new Date(Date.now() + 10000);
+  notificationService.scheduleNotification(scheduleDate);
+};
+
+// In your JSX
+<Button title="Show Notification" onPress={handleShowNotification} />
+<Button title="Schedule Notification" onPress={handleScheduleNotification} />
+*/
+
+// Required dependencies in package.json:
+// "react-native-push-notification": "^8.1.1"
+// "@react-native-async-storage/async-storage": "^1.19.3" (for iOS)
+
+// Installation:
+// npm install react-native-push-notification
+// cd ios && pod install (for iOS)
+
+// Required permissions in android/app/src/main/AndroidManifest.xml:
+// <uses-permission android:name="android.permission.VIBRATE" />
+// <uses-permission android:name="android.permission.WAKE_LOCK" />
+// <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
+// For Android 13+:
+// <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+// Note: This creates LOCAL notifications. For PUSH notifications from Firebase,
+// use @react-native-firebase/messaging and implement remote notification handlers.

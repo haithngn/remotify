@@ -1,0 +1,140 @@
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import android.app.PendingIntent;
+import android.content.Context;
+import android.content.Intent;
+import android.os.Build;
+import androidx.core.app.NotificationCompat;
+import androidx.core.app.NotificationManagerCompat;
+
+public class NotificationHelper {
+    
+    private static final String CHANNEL_ID = "default_notification_channel";
+    private static final String CHANNEL_NAME = "Default Notifications";
+    private static final String CHANNEL_DESCRIPTION = "Default notification channel for app notifications";
+    private static final int NOTIFICATION_ID = 1;
+    
+    private Context context;
+    
+    public NotificationHelper(Context context) {
+        this.context = context;
+        createNotificationChannel();
+    }
+    
+    // Create notification channel (required for Android 8.0+)
+    private void createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            int importance = NotificationManager.IMPORTANCE_DEFAULT;
+            NotificationChannel channel = new NotificationChannel(CHANNEL_ID, CHANNEL_NAME, importance);
+            channel.setDescription(CHANNEL_DESCRIPTION);
+            channel.enableLights(true);
+            channel.enableVibration(true);
+            
+            NotificationManager notificationManager = context.getSystemService(NotificationManager.class);
+            notificationManager.createNotificationChannel(channel);
+        }
+    }
+    
+    // Show local notification
+    public void showNotification() {
+        // Intent for when notification is tapped
+        Intent intent = new Intent(context, MainActivity.class);
+        intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
+        intent.putExtra("notification_title", "{{title}}");
+        intent.putExtra("notification_body", "{{body}}");
+        intent.putExtra("custom_data", "local_notification");
+        
+        PendingIntent pendingIntent;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            pendingIntent = PendingIntent.getActivity(context, 0, intent, 
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+        } else {
+            pendingIntent = PendingIntent.getActivity(context, 0, intent, 
+                PendingIntent.FLAG_UPDATE_CURRENT);
+        }
+        
+        NotificationCompat.Builder builder = new NotificationCompat.Builder(context, CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_notification) // Add your notification icon
+            .setContentTitle("{{title}}")
+            .setContentText("{{body}}")
+            .setSubText("Push Notification") // Optional subtitle
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setContentIntent(pendingIntent)
+            .setAutoCancel(true) // Remove notification when tapped
+            .setDefaults(NotificationCompat.DEFAULT_ALL) // Sound, vibration, lights
+            .setStyle(new NotificationCompat.BigTextStyle()
+                .bigText("{{body}}")) // Expandable text
+            .addAction(R.drawable.ic_action, "Action", pendingIntent); // Optional action button
+        
+        NotificationManagerCompat notificationManager = NotificationManagerCompat.from(context);
+        notificationManager.notify(NOTIFICATION_ID, builder.build());
+        
+        // Log for debugging
+        System.out.println("Local notification shown successfully");
+        System.out.println("Title: {{title}}");
+        System.out.println("Body: {{body}}");
+    }
+    
+    // Check if notifications are enabled
+    public boolean areNotificationsEnabled() {
+        return NotificationManagerCompat.from(context).areNotificationsEnabled();
+    }
+    
+    // Cancel notification
+    public void cancelNotification() {
+        NotificationManagerCompat.from(context).cancel(NOTIFICATION_ID);
+    }
+    
+    // Cancel all notifications
+    public void cancelAllNotifications() {
+        NotificationManagerCompat.from(context).cancelAll();
+    }
+}
+
+/* Usage in Activity:
+public class MainActivity extends AppCompatActivity {
+    private NotificationHelper notificationHelper;
+    
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        setContentView(R.layout.activity_main);
+        
+        // Initialize notification helper
+        notificationHelper = new NotificationHelper(this);
+        
+        // Check if notifications are enabled
+        if (!notificationHelper.areNotificationsEnabled()) {
+            // Prompt user to enable notifications in settings
+            // You can show a dialog or redirect to app settings
+        }
+        
+        // Show notification
+        notificationHelper.showNotification();
+        
+        // Handle notification tap data
+        handleNotificationData();
+    }
+    
+    private void handleNotificationData() {
+        String title = getIntent().getStringExtra("notification_title");
+        String body = getIntent().getStringExtra("notification_body");
+        String customData = getIntent().getStringExtra("custom_data");
+        
+        if (title != null && body != null) {
+            // Handle notification tap
+            System.out.println("Notification tapped - Title: " + title + ", Body: " + body);
+        }
+    }
+}
+*/
+
+// Required permissions in AndroidManifest.xml:
+// <uses-permission android:name="android.permission.VIBRATE" />
+// <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+// For Android 13+ (API 33+), also add:
+// <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+// Note: This creates LOCAL notifications. For PUSH notifications from Firebase,
+// implement FirebaseMessagingService and handle incoming FCM messages.

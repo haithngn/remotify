@@ -1,0 +1,604 @@
+<?php
+require_once __DIR__.'/vendor/autoload.php';
+
+use Kreait\Firebase\Factory;
+use Kreait\Firebase\Messaging\CloudMessage;
+use Kreait\Firebase\Messaging\Notification;
+use Kreait\Firebase\Messaging\AndroidConfig;
+use Kreait\Firebase\Messaging\ApnsConfig;
+use Kreait\Firebase\Messaging\MulticastMessage;
+use Kreait\Firebase\Exception\MessagingException;
+use Monolog\Logger;
+use Monolog\Handler\StreamHandler;
+
+/**
+ * Firebase Cloud Messaging (FCM) Service for sending push notifications
+ */
+class FirebaseNotificationService
+{
+    private $messaging;
+    private $logger;
+    private static $isInitialized = false;
+
+    /**
+     * Constructor
+     */
+    public function __construct()
+    {
+        $this->initializeLogger();
+        $this->initializeFirebase();
+    }
+
+    /**
+     * Initialize logger
+     */
+    private function initializeLogger()
+    {
+        $this->logger = new Logger('firebase_notifications');
+        $this->logger->pushHandler(new StreamHandler('php://stdout', Logger::INFO));
+    }
+
+    /**
+     * Initialize Firebase Admin SDK
+     */
+    private function initializeFirebase()
+    {
+        if (self::$isInitialized) {
+            return;
+        }
+
+        try {
+            $factory = new Factory();
+
+            // Option 1: Using service account file path
+            $serviceAccountPath = getenv('FIREBASE_SERVICE_ACCOUNT_PATH');
+            if ($serviceAccountPath && file_exists($serviceAccountPath)) {
+                $factory = $factory->withServiceAccount($serviceAccountPath);
+                $this->logger->info('Firebase initialized with service account file');
+            }
+            // Option 2: Using service account JSON string
+            else {
+                $serviceAccountJson = getenv('FIREBASE_SERVICE_ACCOUNT_JSON');
+                if ($serviceAccountJson) {
+                    $serviceAccount = json_decode($serviceAccountJson, true);
+                    if (json_last_error() === JSON_ERROR_NONE) {
+                        $factory = $factory->withServiceAccount($serviceAccount);
+                        $this->logger->info('Firebase initialized with service account JSON');
+                    } else {
+                        throw new InvalidArgumentException('Invalid JSON in FIREBASE_SERVICE_ACCOUNT_JSON');
+                    }
+                }
+                // Option 3: Using individual environment variables
+                else {
+                    $projectId = getenv('FIREBASE_PROJECT_ID');
+                    $clientEmail = getenv('FIREBASE_CLIENT_EMAIL');
+                    $privateKey = getenv('FIREBASE_PRIVATE_KEY');
+
+                    if ($projectId && $clientEmail && $privateKey) {
+                        $serviceAccount = [
+                            'type' => 'service_account',
+                            'project_id' => $projectId,
+                            'client_email' => $clientEmail,
+                            'private_key' => str_replace('\\n', "\n", $privateKey),
+                            'private_key_id' => getenv('FIREBASE_PRIVATE_KEY_ID') ?: '',
+                            'client_id' => getenv('FIREBASE_CLIENT_ID') ?: '',
+                            'auth_uri' => 'https://accounts.google.com/o/oauth2/auth',
+                            'token_uri' => 'https://oauth2.googleapis.com/token'
+                        ];
+                        $factory = $factory->withServiceAccount($serviceAccount);
+                        $this->logger->info('Firebase initialized with environment variables');
+                    }
+                    // Option 4: Default auto-discovery (for Google Cloud environments)
+                    else {
+                        $this->logger->info('Firebase initialized with auto-discovery');
+                    }
+                }
+            }
+
+            $this->messaging = $factory->createMessaging();
+            self::$isInitialized = true;
+
+        } catch (Exception $e) {
+            $this->logger->error('Failed to initialize Firebase: ' . $e->getMessage());
+            throw new RuntimeException('Firebase initialization failed: ' . $e->getMessage(), 0, $e);
+        }
+    }
+
+    /**
+     * Send push notification to a single device
+     *
+     * @param string $deviceToken FCM device token
+     * @param string $title Notification title
+     * @param string $body Notification body
+     * @param array|null $data Optional custom data
+     * @param array $options Additional notification options
+     * @return string Message ID if successful
+     * @throws Exception if sending fails
+     */
+    public function sendNotification(string $deviceToken, string $title, string $body, ?array $data = null, array $options = []): string
+    {
+        if (empty($deviceToken)) {
+            throw new InvalidArgumentException('Device token cannot be empty');
+        }
+
+        $title = $title ?: '{{title}}';
+        $body = $body ?: '{{body}}';
+
+        // Set default options
+        $options = array_merge([
+            'badge' => 1,
+            'sound' => 'default',
+            'icon' => 'ic_notification',
+            'color' => '#FF6B35',
+            'channel_id' => 'default_channel',
+            'click_action' => 'FLUTTER_NOTIFICATION_CLICK',
+            'time_to_live' => null
+        ], $options);
+
+        try {
+            // Build the message
+            $message = CloudMessage::withTarget('token', $deviceToken)
+                ->withNotification(Notification::create($title, $body));
+
+            // Add custom data if provided
+            if ($data && is_array($data)) {
+                // Convert all values to strings as required by FCM
+                $stringData = array_map('strval', $data);
+                $message = $message->withData($stringData);
+            }
+
+            // iOS specific configuration
+            $apnsPayload = [
+                'aps' => [
+                    'alert' => [
+                        'title' => $title,
+                        'body' => $body
+                    ],
+                    'badge' => $options['badge'],
+                    'sound' => $options['sound'],
+                    'content-available' => 1
+                ]
+            ];
+
+            $apnsHeaders = [
+                'apns-priority' => '10', // High priority
+                'apns-push-type' => 'alert'
+            ];
+
+            if ($options['time_to_live']) {
+                $apnsHeaders['apns-expiration'] = (string)(time() + $options['time_to_live']);
+            }
+
+            $message = $message->withApnsConfig(
+                ApnsConfig::new()
+                    ->withHeaders($apnsHeaders)
+                    ->withPayload($apnsPayload)
+            );
+
+            // Android specific configuration
+            $androidConfig = [
+                'priority' => 'high',
+                'notification' => [
+                    'title' => $title,
+                    'body' => $body,
+                    'icon' => $options['icon'],
+                    'color' => $options['color'],
+                    'sound' => $options['sound'],
+                    'channel_id' => $options['channel_id'],
+                    'click_action' => $options['click_action']
+                ]
+            ];
+
+            if ($options['time_to_live']) {
+                $androidConfig['ttl'] = $options['time_to_live'] . 's';
+            }
+
+            $message = $message->withAndroidConfig(AndroidConfig::fromArray($androidConfig));
+
+            $response = $this->messaging->send($message);
+            $this->logger->info("Successfully sent message to {$deviceToken}. Response: {$response}");
+
+            return $response;
+
+        } catch (MessagingException $e) {
+            $this->logger->error("Firebase messaging error when sending to {$deviceToken}: " . $e->getMessage());
+            
+            // Handle specific error types
+            $errorCode = $e->getCode();
+            switch ($errorCode) {
+                case 400:
+                    throw new InvalidArgumentException("Invalid message parameters: " . $e->getMessage(), 0, $e);
+                case 404:
+                    throw new InvalidArgumentException("Device token is no longer valid: {$deviceToken}", 0, $e);
+                case 403:
+                    throw new RuntimeException("Authentication failed or sender ID mismatch. Check your Firebase configuration.", 0, $e);
+                case 429:
+                    throw new RuntimeException("Message quota exceeded. Please try again later.", 0, $e);
+                case 503:
+                    throw new RuntimeException("FCM service is temporarily unavailable.", 0, $e);
+                default:
+                    throw new RuntimeException("Firebase messaging error ({$errorCode}): " . $e->getMessage(), 0, $e);
+            }
+        } catch (Exception $e) {
+            $this->logger->error("Unexpected error when sending notification to {$deviceToken}: " . $e->getMessage());
+            throw $e;
+        }
+    }
+
+    /**
+     * Send push notification to multiple devices
+     *
+     * @param array $deviceTokens Array of FCM device tokens
+     * @param string $title Notification title
+     * @param string $body Notification body
+     * @param array|null $data Optional custom data
+     * @param array $options Additional notification options
+     * @return array Batch response with success/failure details
+     * @throws Exception if sending fails
+     */
+    public function sendNotificationToMultiple(array $deviceTokens, string $title, string $body, ?array $data = null, array $options = []): array
+    {
+        if (empty($deviceTokens)) {
+            throw new InvalidArgumentException('Device tokens array cannot be empty');
+        }
+
+        // Filter out empty tokens
+        $validTokens = array_filter($deviceTokens, function($token) {
+            return !empty($token) && is_string($token);
+        });
+
+        if (empty($validTokens)) {
+            throw new InvalidArgumentException('No valid device tokens provided');
+        }
+
+        $title = $title ?: '{{title}}';
+        $body = $body ?: '{{body}}';
+
+        // Set default options
+        $options = array_merge([
+            'badge' => 1,
+            'sound' => 'default',
+            'icon' => 'ic_notification',
+            'color' => '#FF6B35'
+        ], $options);
+
+        try {
+            // Build the multicast message
+            $message = MulticastMessage::withTargets($validTokens)
+                ->withNotification(Notification::create($title, $body));
+
+            // Add custom data if provided
+            if ($data && is_array($data)) {
+                $stringData = array_map('strval', $data);
+                $message = $message->withData($stringData);
+            }
+
+            // iOS configuration
+            $apnsPayload = [
+                'aps' => [
+                    'alert' => [
+                        'title' => $title,
+                        'body' => $body
+                    ],
+                    'badge' => $options['badge'],
+                    'sound' => $options['sound']
+                ]
+            ];
+
+            $message = $message->withApnsConfig(
+                ApnsConfig::new()
+                    ->withHeaders([
+                        'apns-priority' => '10',
+                        'apns-push-type' => 'alert'
+                    ])
+                    ->withPayload($apnsPayload)
+            );
+
+            // Android configuration
+            $androidConfig = [
+                'priority' => 'high',
+                'notification' => [
+                    'title' => $title,
+                    'body' => $body,
+                    'icon' => $options['icon'],
+                    'color' => $options['color'],
+                    'sound' => $options['sound']
+                ]
+            ];
+
+            $message = $message->withAndroidConfig(AndroidConfig::fromArray($androidConfig));
+
+            $report = $this->messaging->sendMulticast($message);
+            $this->logger->info("Sent batch notification. Success: {$report->successes()->count()}, Failed: {$report->failures()->count()}");
+
+            // Build detailed response
+            $responses = [];
+            $successfulMessages = $report->successes()->getItems();
+            $failedMessages = $report->failures()->getItems();
+
+            // Add successful responses
+            foreach ($successfulMessages as $message) {
+                $responses[] = [
+                    'token' => $message->target()->value(),
+                    'success' => true,
+                    'message_id' => $message->messageId(),
+                    'error' => null
+                ];
+            }
+
+            // Add failed responses
+            foreach ($failedMessages as $message) {
+                $error = $message->error();
+                $responses[] = [
+                    'token' => $message->target()->value(),
+                    'success' => false,
+                    'message_id' => null,
+                    'error' => $error->getMessage()
+                ];
+                $this->logger->warning("Failed to send to token {$message->target()->value()}: {$error->getMessage()}");
+            }
+
+            return [
+                'success_count' => $report->successes()->count(),
+                'failure_count' => $report->failures()->count(),
+                'responses' => $responses
+            ];
+
+        } catch (Exception $e) {
+            $this->logger->error('Error sending batch notifications: ' . $e->getMessage());
+            throw $e;
+        }
+    }
+
+    /**
+     * Send notification to a Firebase topic
+     *
+     * @param string $topic Firebase topic name
+     * @param string $title Notification title
+     * @param string $body Notification body
+     * @param array|null $data Optional custom data
+     * @param array $options Additional notification options
+     * @return string Message ID if successful
+     * @throws Exception if sending fails
+     */
+    public function sendToTopic(string $topic, string $title, string $body, ?array $data = null, array $options = []): string
+    {
+        if (empty($topic)) {
+            throw new InvalidArgumentException('Topic cannot be empty');
+        }
+
+        $title = $title ?: '{{title}}';
+        $body = $body ?: '{{body}}';
+
+        // Set default options
+        $options = array_merge([
+            'badge' => 1,
+            'sound' => 'default',
+            'icon' => 'ic_notification',
+            'color' => '#FF6B35'
+        ], $options);
+
+        try {
+            // Build the message
+            $message = CloudMessage::withTarget('topic', $topic)
+                ->withNotification(Notification::create($title, $body));
+
+            // Add custom data if provided
+            if ($data && is_array($data)) {
+                $stringData = array_map('strval', $data);
+                $message = $message->withData($stringData);
+            }
+
+            // iOS configuration
+            $apnsPayload = [
+                'aps' => [
+                    'alert' => [
+                        'title' => $title,
+                        'body' => $body
+                    ],
+                    'badge' => $options['badge'],
+                    'sound' => $options['sound']
+                ]
+            ];
+
+            $message = $message->withApnsConfig(
+                ApnsConfig::new()->withPayload($apnsPayload)
+            );
+
+            // Android configuration
+            $androidConfig = [
+                'notification' => [
+                    'title' => $title,
+                    'body' => $body,
+                    'icon' => $options['icon'],
+                    'color' => $options['color']
+                ]
+            ];
+
+            $message = $message->withAndroidConfig(AndroidConfig::fromArray($androidConfig));
+
+            $response = $this->messaging->send($message);
+            $this->logger->info("Successfully sent message to topic {$topic}. Response: {$response}");
+
+            return $response;
+
+        } catch (Exception $e) {
+            $this->logger->error("Error sending notification to topic {$topic}: " . $e->getMessage());
+            throw $e;
+        }
+    }
+
+    /**
+     * Subscribe tokens to a topic
+     *
+     * @param array $tokens Device tokens to subscribe
+     * @param string $topic Topic name
+     * @return array Subscription results
+     */
+    public function subscribeToTopic(array $tokens, string $topic): array
+    {
+        try {
+            $report = $this->messaging->subscribeToTopic($topic, $tokens);
+            $this->logger->info("Subscribed tokens to topic {$topic}. Success: {$report->successes()->count()}, Failed: {$report->failures()->count()}");
+            
+            return [
+                'success_count' => $report->successes()->count(),
+                'failure_count' => $report->failures()->count()
+            ];
+        } catch (Exception $e) {
+            $this->logger->error("Error subscribing to topic {$topic}: " . $e->getMessage());
+            throw $e;
+        }
+    }
+
+    /**
+     * Unsubscribe tokens from a topic
+     *
+     * @param array $tokens Device tokens to unsubscribe
+     * @param string $topic Topic name
+     * @return array Unsubscription results
+     */
+    public function unsubscribeFromTopic(array $tokens, string $topic): array
+    {
+        try {
+            $report = $this->messaging->unsubscribeFromTopic($topic, $tokens);
+            $this->logger->info("Unsubscribed tokens from topic {$topic}. Success: {$report->successes()->count()}, Failed: {$report->failures()->count()}");
+            
+            return [
+                'success_count' => $report->successes()->count(),
+                'failure_count' => $report->failures()->count()
+            ];
+        } catch (Exception $e) {
+            $this->logger->error("Error unsubscribing from topic {$topic}: " . $e->getMessage());
+            throw $e;
+        }
+    }
+}
+
+/**
+ * Example usage of the Firebase Notification Service
+ */
+function main()
+{
+    try {
+        // Initialize the service
+        $notificationService = new FirebaseNotificationService();
+
+        // Example 1: Send to single device
+        $deviceToken = "DEVICE_TOKEN"; // Replace with actual device token
+        $data = [
+            'custom_key' => 'custom_value',
+            'action' => 'open_screen'
+        ];
+        $options = [
+            'badge' => 1,
+            'sound' => 'notification.wav',
+            'icon' => 'custom_icon',
+            'color' => '#0066CC'
+        ];
+
+        $messageId = $notificationService->sendNotification(
+            $deviceToken,
+            '{{title}}',
+            '{{body}}',
+            $data,
+            $options
+        );
+        echo "Single notification sent with ID: {$messageId}\n";
+
+        // Example 2: Send to multiple devices
+        $deviceTokens = ["TOKEN_1", "TOKEN_2", "TOKEN_3"];
+        $batchData = ['broadcast' => 'true'];
+
+        $batchResponse = $notificationService->sendNotificationToMultiple(
+            $deviceTokens,
+            '{{title}}',
+            '{{body}}',
+            $batchData
+        );
+        echo "Batch notification sent. Success: {$batchResponse['success_count']}, Failed: {$batchResponse['failure_count']}\n";
+
+        // Example 3: Send to topic
+        $topicData = ['category' => 'breaking'];
+
+        $topicResponse = $notificationService->sendToTopic(
+            'news',
+            '{{title}}',
+            '{{body}}',
+            $topicData
+        );
+        echo "Topic notification sent with ID: {$topicResponse}\n";
+
+        // Example 4: Subscribe to topic
+        $subscriptionResult = $notificationService->subscribeToTopic(
+            ["TOKEN_1", "TOKEN_2"],
+            "news"
+        );
+        echo "Topic subscription. Success: {$subscriptionResult['success_count']}, Failed: {$subscriptionResult['failure_count']}\n";
+
+    } catch (Exception $e) {
+        error_log("Error: " . $e->getMessage());
+        exit(1);
+    }
+}
+
+// Run if this file is executed directly
+if (basename(__FILE__) === basename($_SERVER['SCRIPT_NAME'])) {
+    main();
+}
+
+/*
+SETUP INSTRUCTIONS:
+
+1. Install Dependencies (Composer):
+   composer require kreait/firebase-php
+   composer require monolog/monolog
+
+2. Firebase Configuration (Choose one option):
+
+   Option A: Service account file path
+   putenv('FIREBASE_SERVICE_ACCOUNT_PATH=/path/to/service-account.json');
+
+   Option B: Service account JSON string
+   putenv('FIREBASE_SERVICE_ACCOUNT_JSON={"type": "service_account", "project_id": "your-project"...}');
+
+   Option C: Individual environment variables
+   putenv('FIREBASE_PROJECT_ID=your-project-id');
+   putenv('FIREBASE_CLIENT_EMAIL=your-service-account@your-project.iam.gserviceaccount.com');
+   putenv('FIREBASE_PRIVATE_KEY=-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n');
+
+   Option D: Auto-discovery (for Google Cloud environments)
+   No additional configuration needed
+
+3. Usage:
+   $service = new FirebaseNotificationService();
+   $messageId = $service->sendNotification('device-token', 'Title', 'Body');
+
+4. Error Handling:
+   - InvalidArgumentException for invalid parameters
+   - RuntimeException for service and authentication issues
+   - All errors are logged with appropriate levels
+   - Specific error codes are handled and translated to meaningful messages
+
+5. Features:
+   - Single device notifications with comprehensive configuration
+   - Batch notifications (multiple devices) with detailed responses
+   - Topic-based notifications
+   - Topic subscription/unsubscription management
+   - iOS and Android specific configurations
+   - Custom data payload support
+   - TTL (Time To Live) support
+   - Comprehensive error handling and logging
+   - Type hints and strict typing for better code quality
+
+6. Best Practices:
+   - Always handle exceptions appropriately
+   - Use batch sending for multiple recipients (more efficient)
+   - Implement token refresh logic for invalid tokens
+   - Monitor quota usage and implement rate limiting
+   - Test notifications on both iOS and Android devices
+   - Use structured logging for better observability
+   - Set appropriate TTL values for time-sensitive notifications
+   - Manage topic subscriptions efficiently
+*/
+?>

@@ -35,6 +35,7 @@ const (
 	SettingTypeJWTAPNSEnvironment                          = SettingType("jwt_apns_mode")
 	SettingTypeHistoryLength                               = SettingType("history_length")
 	SettingTypeThemeMode                                   = SettingType("theme_mode")
+	SettingTypeCodeGenerationEnabled                       = SettingType("code_generation_enabled")
 )
 
 type ThemeMode string

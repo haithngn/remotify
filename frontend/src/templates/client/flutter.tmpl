@@ -1,0 +1,215 @@
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:timezone/timezone.dart' as tz;
+import 'package:timezone/data/latest.dart' as tz;
+
+class NotificationService {
+  static final FlutterLocalNotificationsPlugin _flutterLocalNotificationsPlugin =
+      FlutterLocalNotificationsPlugin();
+  
+  static const String _channelId = 'default_notification_channel';
+  static const String _channelName = 'Default Notifications';
+  static const String _channelDescription = 'Default notification channel for app notifications';
+
+  // Initialize notifications
+  static Future<void> initialize() async {
+    // Initialize timezone data
+    tz.initializeTimeZones();
+    
+    // Android initialization
+    const AndroidInitializationSettings initializationSettingsAndroid =
+        AndroidInitializationSettings('@mipmap/ic_launcher'); // Use your app icon
+    
+    // iOS initialization
+    const DarwinInitializationSettings initializationSettingsIOS =
+        DarwinInitializationSettings(
+      requestAlertPermission: true,
+      requestBadgePermission: true,
+      requestSoundPermission: true,
+    );
+    
+    const InitializationSettings initializationSettings =
+        InitializationSettings(
+      android: initializationSettingsAndroid,
+      iOS: initializationSettingsIOS,
+    );
+    
+    await _flutterLocalNotificationsPlugin.initialize(
+      initializationSettings,
+      onDidReceiveNotificationResponse: _onNotificationTapped,
+    );
+    
+    // Request permissions for iOS
+    await _requestPermissions();
+  }
+  
+  // Request permissions (mainly for iOS)
+  static Future<void> _requestPermissions() async {
+    await _flutterLocalNotificationsPlugin
+        .resolvePlatformSpecificImplementation<
+            IOSFlutterLocalNotificationsPlugin>()
+        ?.requestPermissions(
+          alert: true,
+          badge: true,
+          sound: true,
+        );
+  }
+  
+  // Handle notification tap
+  static void _onNotificationTapped(NotificationResponse notificationResponse) {
+    final String? payload = notificationResponse.payload;
+    print('Notification tapped with payload: $payload');
+    print('Title: {{title}}, Body: {{body}}');
+    
+    // Handle notification tap logic here
+    // You can navigate to specific screens or perform actions
+  }
+  
+  // Show local notification
+  static Future<void> showNotification() async {
+    // Android notification details
+    const AndroidNotificationDetails androidPlatformChannelSpecifics =
+        AndroidNotificationDetails(
+      _channelId,
+      _channelName,
+      channelDescription: _channelDescription,
+      importance: Importance.max,
+      priority: Priority.high,
+      showWhen: true,
+      enableVibration: true,
+      enableLights: true,
+      playSound: true,
+      icon: '@mipmap/ic_launcher', // Custom notification icon
+      largeIcon: DrawableResourceAndroidBitmap('@mipmap/ic_launcher'),
+      styleInformation: BigTextStyleInformation(
+        '{{body}}', // Expandable text
+        contentTitle: '{{title}}',
+        summaryText: 'Push Notification',
+      ),
+    );
+    
+    // iOS notification details
+    const DarwinNotificationDetails iOSPlatformChannelSpecifics =
+        DarwinNotificationDetails(
+      presentAlert: true,
+      presentBadge: true,
+      presentSound: true,
+      sound: 'default',
+      badgeNumber: 1,
+      threadIdentifier: 'notification_thread',
+      subtitle: 'Push Notification',
+    );
+    
+    const NotificationDetails platformChannelSpecifics = NotificationDetails(
+      android: androidPlatformChannelSpecifics,
+      iOS: iOSPlatformChannelSpecifics,
+    );
+    
+    // Custom payload data
+    const String payload = '{"title": "{{title}}", "body": "{{body}}", "type": "local_notification"}';
+    
+    await _flutterLocalNotificationsPlugin.show(
+      0, // Notification ID
+      '{{title}}',
+      '{{body}}',
+      platformChannelSpecifics,
+      payload: payload,
+    );
+    
+    print('Local notification shown successfully');
+    print('Title: {{title}}');
+    print('Body: {{body}}');
+  }
+  
+  // Schedule notification for later
+  static Future<void> scheduleNotification({
+    required DateTime scheduledDate,
+    int id = 0,
+  }) async {
+    await _flutterLocalNotificationsPlugin.zonedSchedule(
+      id,
+      '{{title}}',
+      '{{body}}',
+      tz.TZDateTime.from(scheduledDate, tz.local),
+      const NotificationDetails(
+        android: AndroidNotificationDetails(
+          _channelId,
+          _channelName,
+          channelDescription: _channelDescription,
+          importance: Importance.max,
+          priority: Priority.high,
+        ),
+        iOS: DarwinNotificationDetails(
+          presentAlert: true,
+          presentBadge: true,
+          presentSound: true,
+        ),
+      ),
+      androidAllowWhileIdle: true,
+      uiLocalNotificationDateInterpretation:
+          UILocalNotificationDateInterpretation.absoluteTime,
+    );
+  }
+  
+  // Cancel specific notification
+  static Future<void> cancelNotification(int id) async {
+    await _flutterLocalNotificationsPlugin.cancel(id);
+  }
+  
+  // Cancel all notifications
+  static Future<void> cancelAllNotifications() async {
+    await _flutterLocalNotificationsPlugin.cancelAll();
+  }
+  
+  // Check if notifications are enabled
+  static Future<bool> areNotificationsEnabled() async {
+    return await _flutterLocalNotificationsPlugin
+            .resolvePlatformSpecificImplementation<
+                AndroidFlutterLocalNotificationsPlugin>()
+            ?.areNotificationsEnabled() ??
+        false;
+  }
+}
+
+/* Usage in main.dart or your widget:
+
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  
+  // Initialize notifications
+  await NotificationService.initialize();
+  
+  runApp(MyApp());
+}
+
+// In your widget:
+ElevatedButton(
+  onPressed: () {
+    NotificationService.showNotification();
+  },
+  child: Text('Show Notification'),
+),
+
+// For scheduled notifications:
+ElevatedButton(
+  onPressed: () {
+    final scheduledDate = DateTime.now().add(Duration(seconds: 5));
+    NotificationService.scheduleNotification(scheduledDate: scheduledDate);
+  },
+  child: Text('Schedule Notification'),
+),
+*/
+
+// Required dependencies in pubspec.yaml:
+// dependencies:
+//   flutter_local_notifications: ^15.1.0+1
+//   timezone: ^0.9.2
+
+// Required permissions in android/app/src/main/AndroidManifest.xml:
+// <uses-permission android:name="android.permission.VIBRATE" />
+// <uses-permission android:name="android.permission.WAKE_LOCK" />
+// <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+// For Android 13+:
+// <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+// Note: This creates LOCAL notifications. For PUSH notifications from Firebase,
+// use firebase_messaging package and implement FirebaseMessaging handlers.
