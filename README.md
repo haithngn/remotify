@@ -17,6 +17,7 @@
 - History of sent notifications for easy reference.
 - Easy-to-use interface for sending notifications.
 - **Dark Mode** for a more immersive experience.
+- Code Gen
 
 ---
 
@@ -55,7 +56,6 @@ You need to install development tools to compile the project, see [Technologies 
 | Feature | Description                                                                                              | Status   |
 |---|----------------------------------------------------------------------------------------------------------|---|
 | Preview | Display a preview of the notification on emulated device screen(s).                                      | **In Progress** |
-| Generate Code | Generate implementation code for both client and server side.                                            | **To Do** |
 | Built-in Functions | A try-it-out feature let anyone can push and see the result on real devices without creating Mobile app. | **To Do** |
 
 Feel free to contribute your ideas and suggestions on our [tickets](https://github.com/haithngn/remotify/issues).
