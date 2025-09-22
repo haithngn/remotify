@@ -47,12 +47,16 @@ jobs:
         with:
           p12-file-base64: ${{ secrets.DEVELOPER_ID_APPLICATION_CERT }}
           p12-password: ${{ secrets.CERTIFICATE_DECRYPT_PASSWORD }}
+          keychain: signing_temp
+          create-keychain: true
 
       - name: Import Developer ID Installer Certificate
         uses: apple-actions/import-codesign-certs@v2
         with:
           p12-file-base64: ${{ secrets.DEVDELOPER_ID_INSTALLER_CERT }}
           p12-password: ${{ secrets.CERTIFICATE_DECRYPT_PASSWORD }}
+          keychain: signing_temp
+          create-keychain: false
 
       - name: Build Wails app with code signing
         run: |
