@@ -288,7 +288,7 @@ func (a *App) getMenus() *menu.Menu {
 	mainMenu := AppMenu.AddSubmenu("Remotify")
 	mainMenu.AddText("About", nil, func(_ *menu.CallbackData) {
 		runtime.EventsEmit(a.ctx, "onOpenAboutWindow", "{"+
-			"\"app_version\": \"1.0.2\","+
+			"\"app_version\": \"1.1.0\","+
 			"\"copy_right\":\"© 2024 Hai Nguyen\","+
 			"}")
 	})
