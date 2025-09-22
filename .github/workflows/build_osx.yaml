@@ -25,17 +25,84 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Build wails
-        uses: dAppServer/wails-build-action@main
-        id: build
+      - name: Setup Go
+        uses: actions/setup-go@v4
         with:
-          build-name: ${{ matrix.build.name }}
-          build-platform: ${{ matrix.build.platform }}
-          package: false
           go-version: '1.22'
 
-      - name: 'Upload artifact'
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+
+      - name: Install Wails
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
+
+      - name: Install frontend dependencies
+        run: npm install
+        working-directory: frontend
+
+      - name: Import Developer ID Application Certificate
+        uses: apple-actions/import-codesign-certs@v2
+        with:
+          p12-file-base64: ${{ secrets.DEVELOPER_ID_APPLICATION_CERT }}
+          p12-password: ${{ secrets.CERTIFICATE_DECRYPT_PASSWORD }}
+
+      - name: Import Developer ID Installer Certificate
+        uses: apple-actions/import-codesign-certs@v2
+        with:
+          p12-file-base64: ${{ secrets.DEVDELOPER_ID_INSTALLER_CERT }}
+          p12-password: ${{ secrets.CERTIFICATE_DECRYPT_PASSWORD }}
+
+      - name: Build Wails app with code signing
+        run: |
+          wails build -platform darwin/amd64 -ldflags "-s -w" -tags production -trimpath -o Remotify.app
+        env:
+          CGO_ENABLED: 1
+
+      - name: Code sign the application
+        run: |
+          # Sign the app bundle
+          codesign --force --options runtime --deep --sign "Developer ID Application" build/bin/Remotify.app
+          
+          # Verify the signature
+          codesign --verify --verbose build/bin/Remotify.app
+          spctl --assess --verbose build/bin/Remotify.app
+
+      - name: Create DMG
+        run: |
+          # Create a temporary directory for DMG contents
+          mkdir -p dmg-contents
+          cp -R build/bin/Remotify.app dmg-contents/
+          
+          # Create symbolic link to Applications folder
+          ln -s /Applications dmg-contents/Applications
+          
+          # Create DMG
+          hdiutil create -volname "Remotify" -srcfolder dmg-contents -ov -format UDZO Remotify.dmg
+
+      - name: Code sign the DMG
+        run: |
+          codesign --force --sign "Developer ID Application" Remotify.dmg
+          codesign --verify --verbose Remotify.dmg
+
+      - name: Notarize the DMG
+        run: |
+          # Submit for notarization
+          xcrun notarytool submit Remotify.dmg \
+            --apple-id "${{ secrets.APPLE_ID }}" \
+            --password "${{ secrets.APPLE_PASSWORD }}" \
+            --team-id "${{ secrets.APPLE_TEAM_ID }}" \
+            --wait
+          
+          # Staple the notarization
+          xcrun stapler staple Remotify.dmg
+          
+          # Verify notarization
+          xcrun stapler validate Remotify.dmg
+
+      - name: 'Upload DMG artifact'
         uses: actions/upload-artifact@v4
         with:
-          name: Wails Build ${{ runner.os }} ${{ inputs.build-name }}
-          path: build/bin/Remotify.app
+          name: Remotify-macOS-DMG
+          path: Remotify.dmg
